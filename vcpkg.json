@@ -1,0 +1,9 @@
+{
+    "name": "intelligencematters",
+    "version-string": "1.0.0",
+    "description": "Intelligence Matters - proprietary SKSE plugin",
+    "builtin-baseline": "fc3f61366102c1f0d4547c06d03c523bb18c13a7",
+    "dependencies": [
+        "commonlibsse-ng"
+    ]
+}

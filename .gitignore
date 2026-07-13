@@ -1,0 +1,16 @@
+# Artefatos de build do CMake / Visual Studio
+build/
+out/
+*.dll
+*.pdb
+*.lib
+*.exp
+*.ilk
+
+# Cache local do vcpkg em modo manifesto
+vcpkg_installed/
+
+# Arquivos temporarios de IDE
+.vs/
+CMakeSettings.json
+*.user
