@@ -4,6 +4,7 @@ cmake_minimum_required(VERSION 3.21)
 # Intelligence Matters - proprietary SKSE plugin (Phase 16)
 # Stage A: validation plugin. Just writes a line to the SKSE log.
 # Stage B: per-module infrastructure + Papyrus API (IMPlugin.GetVersion).
+# Stage C.1 Part 1.5: CastTime module, TRACE ONLY (logs, changes nothing).
 # ---------------------------------------------------------------------------
 
 # SINGLE SOURCE OF TRUTH for the DLL version.
@@ -47,6 +48,7 @@ add_commonlibsse_plugin(
         src/Log.cpp
         src/Papyrus.cpp
         src/PluginInfo.cpp
+        src/CastTime.cpp
 )
 
 target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_23)
