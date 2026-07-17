@@ -1,7 +1,7 @@
 // PluginInfo.cpp
 // Intelligence Matters - SKSE plugin
 //
-// Native implementations behind IMPlugin.psc.
+// Native implementations behind Lodestone.psc.
 //
 // API CONVENTION (Stage B.3) - applies to every native in this plugin:
 //   - Native functions NEVER let a C++ exception cross into the Papyrus VM.
@@ -11,7 +11,7 @@
 //       Int    -> -1
 //       String -> "" (empty)
 //       Bool   -> false
-//     The sentinel for each function is documented in IMPlugin.psc, which is the
+//     The sentinel for each function is documented in Lodestone.psc, which is the
 //     contract the Papyrus side reads.
 //   - Every public native gets a comment stating what it returns and when it fails.
 //
@@ -29,7 +29,7 @@ namespace Lodestone::PluginInfo
 {
 	namespace
 	{
-		// IMPlugin.GetVersion() -> Int
+		// Lodestone.GetVersion() -> Int
 		//
 		// Returns the packed DLL version: major * 1000000 + minor * 1000 + patch.
 		// Example: 1.0.0 -> 1000000
@@ -45,7 +45,7 @@ namespace Lodestone::PluginInfo
 			return Version::kPacked;
 		}
 
-		// IMPlugin.GetVersionString() -> String
+		// Lodestone.GetVersionString() -> String
 		//
 		// Returns the human-readable DLL version, e.g. "1.0.0".
 		// For display and logging only - do NOT parse this for version gating,
@@ -66,10 +66,10 @@ namespace Lodestone::PluginInfo
 		}
 
 		// The second argument is the Papyrus SCRIPT name, which must match the
-		// Scriptname in IMPlugin.psc exactly. Papyrus calls them as
-		// IMPlugin.GetVersion() / IMPlugin.GetVersionString().
-		a_vm->RegisterFunction("GetVersion", "IMPlugin", GetVersion);
-		a_vm->RegisterFunction("GetVersionString", "IMPlugin", GetVersionString);
+		// Scriptname in Lodestone.psc exactly. Papyrus calls them as
+		// Lodestone.GetVersion() / Lodestone.GetVersionString().
+		a_vm->RegisterFunction("GetVersion", "Lodestone", GetVersion);
+		a_vm->RegisterFunction("GetVersionString", "Lodestone", GetVersionString);
 
 		spdlog::info("PluginInfo: natives registered (GetVersion, GetVersionString).");
 		return true;

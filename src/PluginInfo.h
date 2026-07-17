@@ -6,7 +6,7 @@
 // This is the first consumer of the module + dispatcher convention established
 // in Stage B.1, and the module that satisfies the Stage B closing criterion.
 //
-// Papyrus-facing script: IMPlugin.psc
+// Papyrus-facing script: Lodestone.psc
 //
 // Phase 16 - Stage B.1 / B.2
 
