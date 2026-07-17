@@ -11,7 +11,7 @@
 //   No IM functionality goes here - that's Stage C. Every new module plugs
 //   into the dispatcher (Papyrus.cpp), NOT into this file.
 //
-// Phase 16 - Stage C.1 Part 1.5: a fourth step appears -
+// Phase 16 - Stage C.1: a fourth step appears -
 //     4. Register a message listener -> installs engine hooks on kDataLoaded
 //
 //   This is the one exception to "everything plugs into the dispatcher". The
@@ -19,10 +19,14 @@
 //   no Papyrus surface and a different lifecycle (the vtable must exist, but
 //   the VM need not be up). So hook installation gets its own seam here.
 //
-//   kDataLoaded is the install point. A vtable swap would in fact work earlier,
-//   but C.1 Part 2 will need to cache the IM_CT_* TESGlobal pointers, and those
-//   only resolve once plugin data is loaded. Using kDataLoaded now means Part 2
-//   adds a lookup to an existing callback instead of moving the install.
+//   The exception is specific to C.1, which has no native at all - its channel
+//   is a pair of globals. C.2 (external plugin) and C.3
+//   (external plugin) DO expose natives and will plug into the dispatcher as
+//   Stage B predicted.
+//
+//   kDataLoaded is the install point, and C.1 needs it: a vtable swap alone
+//   would work earlier, but the module also caches the IM_CT_* TESGlobal
+//   pointers, and those only resolve once plugin data is loaded.
 // ---------------------------------------------------------------------------
 
 // RE/Skyrim.h and SKSE/SKSE.h come from PCH.h (force-included by CMake).
@@ -68,7 +72,7 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse) {
         return false;
     }
 
-    spdlog::info("Papyrus callback registered - Phase 16 Stage B.");
+    spdlog::info("Papyrus callback registered.");
 
     // Engine hook installation is deferred to kDataLoaded (see header comment).
     if (!SKSE::GetMessagingInterface()->RegisterListener(OnMessage)) {
@@ -76,7 +80,7 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse) {
         return false;
     }
 
-    spdlog::info("Message listener registered - Phase 16 Stage C.1 Part 1.5.");
+    spdlog::info("Message listener registered.");
 
     return true;
 }
