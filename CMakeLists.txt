@@ -66,23 +66,34 @@ target_precompile_headers(${PROJECT_NAME} PRIVATE src/PCH.h)
 # ---------------------------------------------------------------------------
 # Copies the DLL to the MO2 deploy mod after each build (Stage B).
 #
-# The "Intelligence Matters DLL" mod is NOT a worktree of anything - it's only
-# a destination for the compiled artifact, outside git. Source lives in this
-# worktree (plugin-skse); the compiled binary lives there. Never the other
-# way around.
+# The deploy folder is NOT a worktree of anything - it's only a destination for
+# the compiled artifact, outside git. Source lives in this repo; the compiled
+# binary lives there. Never the other way around.
 #
 # Enabled in Stage B to remove manual copying: forgetting to copy makes the
 # game load the stale DLL, and the resulting bug looks like a code issue.
+#
+# LODESTONE_OUTPUT_FOLDER is overridable: pass -DLODESTONE_OUTPUT_FOLDER=... on
+# the CMake command line, or set it in the environment. A contributor's deploy
+# path is not ours to hardcode, so the default below is only a fallback used
+# when neither is provided. Set it to an empty string to skip deploy entirely.
 # ---------------------------------------------------------------------------
-set(IM_OUTPUT_FOLDER "G:/Modlists/Skyrim Dev/mods/Intelligence Matters DLL/SKSE/Plugins")
-if(DEFINED IM_OUTPUT_FOLDER)
-    message(STATUS "DLL deploy folder: ${IM_OUTPUT_FOLDER}")
+if(NOT DEFINED LODESTONE_OUTPUT_FOLDER AND DEFINED ENV{LODESTONE_OUTPUT_FOLDER})
+    set(LODESTONE_OUTPUT_FOLDER "$ENV{LODESTONE_OUTPUT_FOLDER}")
+endif()
+
+if(NOT DEFINED LODESTONE_OUTPUT_FOLDER)
+    set(LODESTONE_OUTPUT_FOLDER "G:/Modlists/Skyrim Dev/mods/Lodestone - DEV/SKSE/Plugins")
+endif()
+
+if(LODESTONE_OUTPUT_FOLDER)
+    message(STATUS "DLL deploy folder: ${LODESTONE_OUTPUT_FOLDER}")
     add_custom_command(
         TARGET ${PROJECT_NAME}
         POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E make_directory "${IM_OUTPUT_FOLDER}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${LODESTONE_OUTPUT_FOLDER}"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:${PROJECT_NAME}>" "${IM_OUTPUT_FOLDER}"
+            "$<TARGET_FILE:${PROJECT_NAME}>" "${LODESTONE_OUTPUT_FOLDER}"
         VERBATIM
     )
 endif()
