@@ -20,7 +20,7 @@
 
 #include <cstdint>
 
-namespace IMPlugin::Version
+namespace Lodestone::Version
 {
 	inline constexpr std::uint32_t kMajor = @PROJECT_VERSION_MAJOR@;
 	inline constexpr std::uint32_t kMinor = @PROJECT_VERSION_MINOR@;

@@ -46,7 +46,7 @@ namespace
 		}
 
 		if (a_msg->type == SKSE::MessagingInterface::kDataLoaded) {
-			IMPlugin::CastTime::Install();
+			Lodestone::CastTime::Install();
 		}
 	}
 }
@@ -56,18 +56,18 @@ namespace
 SKSEPluginLoad(const SKSE::LoadInterface* a_skse) {
     // Without a log there's no way to diagnose anything - abort the load
     // explicitly instead of continuing blind.
-    if (!IMPlugin::Log::Init()) {
+    if (!Lodestone::Log::Init()) {
         SKSE::stl::report_and_fail("SKSE log directory not provided.");
     }
 
     SKSE::Init(a_skse);
 
     spdlog::info("{} v{} loaded successfully.",
-        IMPlugin::Version::kProjectName, IMPlugin::Version::kString);
+        Lodestone::Version::kProjectName, Lodestone::Version::kString);
 
     // Native function registration. SKSE calls the dispatcher once the
     // Papyrus VM is ready - that happens later during load, not right now.
-    if (!SKSE::GetPapyrusInterface()->Register(IMPlugin::Papyrus::Register)) {
+    if (!SKSE::GetPapyrusInterface()->Register(Lodestone::Papyrus::Register)) {
         spdlog::error("Failed to register the Papyrus callback - natives unavailable.");
         return false;
     }

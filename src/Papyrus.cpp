@@ -9,7 +9,7 @@
 
 #include "PluginInfo.h"
 
-namespace IMPlugin::Papyrus
+namespace Lodestone::Papyrus
 {
 	bool Register(RE::BSScript::IVirtualMachine* a_vm)
 	{

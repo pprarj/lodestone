@@ -14,7 +14,7 @@
 
 #include <format>
 
-namespace IMPlugin::Log
+namespace Lodestone::Log
 {
 	bool Init()
 	{

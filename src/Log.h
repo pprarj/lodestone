@@ -14,7 +14,7 @@
 
 #pragma once
 
-namespace IMPlugin::Log
+namespace Lodestone::Log
 {
 	// Initializes the plugin log file and installs it as the default logger.
 	// Must be called once, first thing in SKSEPluginLoad, before any spdlog:: call.

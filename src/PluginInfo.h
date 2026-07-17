@@ -12,10 +12,10 @@
 
 #pragma once
 
-namespace IMPlugin::PluginInfo
+namespace Lodestone::PluginInfo
 {
 	// Registers this module's native functions with the Papyrus VM.
-	// Called by IMPlugin::Papyrus::Register - never called directly.
+	// Called by Lodestone::Papyrus::Register - never called directly.
 	//
 	// Returns false if any registration failed.
 	bool RegisterFuncs(RE::BSScript::IVirtualMachine* a_vm);

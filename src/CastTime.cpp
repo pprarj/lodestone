@@ -35,7 +35,7 @@
 
 #include "CastTime.h"
 
-namespace IMPlugin::CastTime
+namespace Lodestone::CastTime
 {
 	namespace
 	{

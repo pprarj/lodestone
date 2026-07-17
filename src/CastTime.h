@@ -42,7 +42,7 @@
 
 #pragma once
 
-namespace IMPlugin::CastTime
+namespace Lodestone::CastTime
 {
 	// Resolves the IM_CT_* globals and swaps one entry of the ActorMagicCaster
 	// vtable. Must be called exactly once - NOT idempotent.
