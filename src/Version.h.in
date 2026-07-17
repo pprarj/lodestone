@@ -1,5 +1,5 @@
 // Version.h.in
-// Intelligence Matters - SKSE plugin
+// Lodestone - Shared SKSE framework
 //
 // TEMPLATE FILE. Do NOT edit the generated Version.h - edit this file instead.
 // CMake generates Version.h from this template via configure_file(), filling in
@@ -30,7 +30,7 @@ namespace Lodestone::Version
 	// Lodestone.GetVersionString().
 	inline constexpr auto kString = "@PROJECT_VERSION@";
 
-	// Name used for the log file (IntelligenceMatters.log) and log lines.
+	// Name used for the log file (Lodestone.log) and log lines.
 	inline constexpr auto kProjectName = "@PROJECT_NAME@";
 
 	// Packed numeric version for comparison from Papyrus.

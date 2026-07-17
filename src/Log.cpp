@@ -1,5 +1,5 @@
 // Log.cpp
-// Intelligence Matters - SKSE plugin
+// Lodestone - Shared SKSE framework
 //
 // Implementation of the plugin logger. Logic moved out of plugin.cpp (Stage A)
 // with no behavior change: same file name, same destination directory.

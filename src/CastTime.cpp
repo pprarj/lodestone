@@ -1,5 +1,5 @@
 // CastTime.cpp
-// Intelligence Matters - SKSE plugin
+// Lodestone - Shared SKSE framework
 //
 // Production implementation of Stage C.1: the external plugin replacement.
 //

@@ -1,5 +1,5 @@
 // PluginInfo.cpp
-// Intelligence Matters - SKSE plugin
+// Lodestone - Shared SKSE framework
 //
 // Native implementations behind Lodestone.psc.
 //

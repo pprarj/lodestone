@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// Intelligence Matters - proprietary SKSE plugin
+// Lodestone - Shared SKSE framework
 //
 // Phase 16 - Stage A: validation plugin (load log).
 // Phase 16 - Stage B: lean entry point. plugin.cpp implements nothing itself -

@@ -1,11 +1,11 @@
 // Log.h
-// Intelligence Matters - SKSE plugin
+// Lodestone - Shared SKSE framework
 //
 // Owns the plugin's spdlog setup. Extracted from plugin.cpp in Stage B.1 so that
 // every module logs the same way, to the same file, without plugin.cpp knowing
 // the details.
 //
-// Log file: Documents/My Games/Skyrim Special Edition/SKSE/IntelligenceMatters.log
+// Log file: Documents/My Games/Skyrim Special Edition/SKSE/Lodestone.log
 //
 // Usage from any module (spdlog is pulled in by PCH.h):
 //     spdlog::info("something happened: {}", value);

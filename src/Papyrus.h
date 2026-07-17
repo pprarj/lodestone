@@ -1,5 +1,5 @@
 // Papyrus.h
-// Intelligence Matters - SKSE plugin
+// Lodestone - Shared SKSE framework
 //
 // Central dispatcher for Papyrus native registration.
 //

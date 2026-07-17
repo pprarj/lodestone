@@ -1,5 +1,5 @@
 // PluginInfo.h
-// Intelligence Matters - SKSE plugin
+// Lodestone - Shared SKSE framework
 //
 // Module: PluginInfo
 // Owns the plugin's self-describing native API (version / presence check).

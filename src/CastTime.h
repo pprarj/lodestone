@@ -1,5 +1,5 @@
 // CastTime.h
-// Intelligence Matters - SKSE plugin
+// Lodestone - Shared SKSE framework
 //
 // Module: CastTime
 // Replaces external plugin as the source of dynamic cast time (Stage C.1).

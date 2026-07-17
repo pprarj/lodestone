@@ -1,5 +1,5 @@
 // Papyrus.cpp
-// Intelligence Matters - SKSE plugin
+// Lodestone - Shared SKSE framework
 //
 // Implementation of the native registration dispatcher.
 //
