@@ -1,7 +1,7 @@
-# Intelligence Matters - Plugin SKSE (DLL)
+# Lodestone - Plugin SKSE (DLL)
 
-Codigo C++ do plugin proprio do IM (Fase 16). Vive na branch `plugin-skse`,
-na worktree `intelligence-matters-dll/DLL/`. NAO existe na branch `dev`.
+Codigo C++ nativo do Lodestone, o framework SKSE compartilhado. A raiz deste
+repositorio e a raiz do projeto CMake.
 
 ## Pre-requisitos (Etapa A - Parte 1)
 
@@ -19,7 +19,7 @@ commitada na arvore. Reprodutibilidade vem do baseline fixado no registry.
 ## Primeiro build
 
 Rodar no "Developer Command Prompt for VS 2022" (traz o cmake no PATH).
-Todos os comandos de dentro de `DLL/`.
+Todos os comandos a partir da raiz do repositorio.
 
 O baseline do registry default (microsoft/vcpkg) esta fixado em
 `builtin-baseline` no `vcpkg.json`; o do registry colorglass em
@@ -44,7 +44,7 @@ Sequencia:
 
 3. A DLL sai em:
 
-       DLL/build/Release/IntelligenceMatters.dll
+       build/Release/Lodestone.dll
 
 Se trocar o VCPKG_ROOT entre builds, apagar a pasta build/ antes de
 reconfigurar (o CMake cacheia o caminho do toolchain):
@@ -53,13 +53,13 @@ reconfigurar (o CMake cacheia o caminho do toolchain):
 
 ## Via Visual Studio (alternativa a linha de comando)
 
-Abrir a pasta `DLL/` com "Abrir uma pasta local". O VS detecta o CMakePresets,
+Abrir a pasta raiz do repositorio com "Abrir uma pasta local". O VS detecta o CMakePresets,
 roda o configure automaticamente e permite build com F7. Nao usar "Criar um
 projeto" nem abrir .sln - o projeto e baseado em CMake, nao em solucao.
 
 ## Instalacao para teste em jogo
 
-Copiar `IntelligenceMatters.dll` para a pasta `SKSE/Plugins/` de um mod
+Copiar `Lodestone.dll` para a pasta `SKSE/Plugins/` de um mod
 gerenciado pelo MO2 (ou habilitar o bloco de copia automatica comentado no
 `CMakeLists.txt`).
 
@@ -67,6 +67,6 @@ gerenciado pelo MO2 (ou habilitar o bloco de copia automatica comentado no
 
 Com a DLL instalada e um save limpo carregado, deve existir:
 
-    Documents/My Games/Skyrim Special Edition/SKSE/IntelligenceMatters.log
+    Documents/My Games/Skyrim Special Edition/SKSE/Lodestone.log
 
 contendo as linhas de "carregado com sucesso" e "Ambiente de plugin validado".
