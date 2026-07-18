@@ -49,6 +49,7 @@ add_commonlibsse_plugin(
         src/Core/Papyrus.cpp
         src/Core/PluginInfo.cpp
         src/Core/CastTime.cpp
+        src/Core/BookFramework.cpp
 )
 
 target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_23)

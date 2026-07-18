@@ -2,14 +2,14 @@
 // Lodestone - Shared SKSE framework
 //
 // Module: CastTime (Core)
-// Owns the dynamic cast time capability (the external plugin replacement, Stage C.1).
+// Owns the dynamic cast time capability (Stage C.1).
 //
-// CORE, NOT DOMAIN (Phase L0). This module used to hardcode
-// "IntelligenceMatters_CastTime.esp" and resolve its globals by fixed FormID on
-// kDataLoaded - a Domain coupling to one specific consumer. Lodestone is a public
-// framework used by other mod authors, so that coupling had to go. The module now
-// knows no consumer by name: it exposes a registration native and the consumer
-// passes its OWN globals in at runtime.
+// CORE, NOT DOMAIN (Phase L0). This module used to hardcode one specific
+// consumer's ESP name and resolve its globals by fixed FormID on kDataLoaded - a
+// Domain coupling to a single consumer. Lodestone is a public framework used by
+// other mod authors, so that coupling had to go. The module now knows no consumer
+// by name: it exposes a registration native and the consumer passes its OWN
+// globals in at runtime.
 //
 // CONTRACT:
 //
@@ -49,8 +49,8 @@
 //   game load) and is accepted silently. A registration of DIFFERENT globals while
 //   a channel is already held is a genuine second registrant: it is warned in the
 //   log and REJECTED (the held channel is unchanged, the native returns false).
-//   This mirrors standard SKSE framework posture - external plugin was likewise the single
-//   owner of this hook. Rich arbitration between several cast-time mods (chaining,
+//   This mirrors standard SKSE framework posture - a single owner of this hook.
+//   Rich arbitration between several cast-time mods (chaining,
 //   summing, priority) is a documented FUTURE improvement, deliberately NOT built
 //   here and NOT a blocker for going public. See CastTime.cpp for the same note at
 //   the registration site.

@@ -19,7 +19,7 @@ Currently implemented:
 | Module | Layer | Papyrus surface |
 | ------ | ----- | --------------- |
 | PluginInfo | Core | `Lodestone.GetVersion()`, `Lodestone.GetVersionString()` |
-| CastTime | Domain (Intelligence Matters) | none - engine hook, driven by globals |
+| CastTime | Core | `Lodestone.RegisterCastTimeChannel()` + engine hook |
 
 ---
 
@@ -75,7 +75,7 @@ Modules live in one of two layers, and the distinction is enforced, not aspirati
 | **Core** (`Lodestone::Core`) | **Never** knows a consumer by name. PluginInfo, Log, the Papyrus dispatcher, actor values, localization, ExtraData. |
 | **Domain** (`Lodestone::Modules`) | **May** hardcode its own consumer's plugin file. Gated on that file's presence, passthrough when absent. |
 
-`CastTime` is a Domain module: it resolves two globals out of `IntelligenceMatters_CastTime.esp` and does nothing at all if that file is not installed. This is a bounded, deliberate exception, documented in the module itself. It is not a pattern to copy into Core.
+No Domain module ships yet. A Domain module may gate on its own consumer's plugin file - present, it does its work; absent, it stays passthrough - a bounded, deliberate exception that never leaks into Core. `CastTime` began that way and moved to Core once its consumer coupling was replaced by runtime registration (`RegisterCastTimeChannel`): a Core module never knows a consumer by name, and takes what it needs at runtime instead.
 
 ### Native API conventions
 

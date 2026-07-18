@@ -1,12 +1,12 @@
 // CastTime.cpp
 // Lodestone - Shared SKSE framework
 //
-// Production implementation of the cast time capability (the external plugin replacement).
+// Production implementation of the cast time capability.
 //
 // Phase L0 moved this module from Domain to Core. The hook, the filter, and the
 // formula are UNCHANGED and stay validated: every rule in Apply() below still
 // comes from a specific line of the original Part 1.5 trace log, run on TWO
-// independent load orders (an overhaul mod active, and a clean vanilla new game). What
+// independent load orders (one heavy modded one, and a clean vanilla new game). What
 // changed is only the SOURCE of the two globals: they used to be looked up by a
 // hardcoded ESP + FormID on kDataLoaded; they are now REGISTERED at runtime by the
 // consumer, which passes its own GlobalVariable records through a native. The
@@ -131,8 +131,8 @@ namespace Lodestone::Core::CastTime
 			}
 
 			// 2. ConstantEffect out. This is where the volume goes: abilities,
-			//    racial powers, perk dummies, third-party effects (other mods,
-			//    other mods, an overhaul mod's GM controllers) reapplied in a loop.
+			//    racial powers, perk dummies, and other mods' constant-effect
+			//    controllers reapplied in a loop.
 			if (magicItem->GetCastingType() == RE::MagicSystem::CastingType::kConstantEffect) {
 				return;
 			}
@@ -143,12 +143,11 @@ namespace Lodestone::Core::CastTime
 			//    floors castingTimer at 0.0001 even for pure concentration with a
 			//    zero charge time in the record.
 			//
-			//      a modded spell (an overhaul mod)  SPIT.chargeTime=0.0000  timer after=0.0001
-			//      Flames    (vanilla)   SPIT.chargeTime=0.0000  timer after=0.0001
-			//                            ^ same FormID 0x00012FCD, an overhaul mod only
-			//                              renames it. The floor is the ENGINE's,
-			//                              not an overhaul mod's - which is exactly why
-			//                              the second load order was tested.
+			//      Flames (vanilla, 0x00012FCD)  SPIT.chargeTime=0.0000  timer=0.0001
+			//                            ^ a mod may rename this spell, but the
+			//                              0.0001 floor is the ENGINE's, not any
+			//                              mod's - which is exactly why a second,
+			//                              clean vanilla load order was tested.
 			//
 			//    A `castingTimer <= 0` test would therefore NEVER fire, and
 			//    (0.0001 * mult) + offset would have invented ~0.5s of charge on
@@ -161,10 +160,10 @@ namespace Lodestone::Core::CastTime
 			//
 			//    SPIT.chargeTime > 0 on a Concentration spell is legal record
 			//    format, not a mod hack: Morokei Channel (0x000F82B4, charge=3)
-			//    ships in Skyrim.esm. Absorbing Grasp (an overhaul mod, charge=0.3)
-			//    validated it in the trace. Magic Redone / Expanded Grimoire use
-			//    the same pattern. Reading the record field means this works on
-			//    any load order without knowing those mods exist.
+			//    ships in the base game. Other concentration spells with a real
+			//    charge time validated it in the trace. Reading the record field
+			//    means this works on any load order without knowing which mods
+			//    are present.
 			auto* spell = magicItem->As<RE::SpellItem>();
 			if (!spell) {
 				// EnchantmentItem and friends derive from MagicItem but not from
@@ -287,7 +286,7 @@ namespace Lodestone::Core::CastTime
 		//   load) and is accepted silently. A DISTINCT second registrant while a
 		//   channel is already held is warned and REJECTED - the held channel is
 		//   left untouched and the native returns false. This is standard SKSE
-		//   framework posture (external plugin was the single owner of this same hook). Rich
+		//   framework posture (a single owner of this hook). Rich
 		//   arbitration between several cast-time mods (chaining, summing,
 		//   priority) is a FUTURE improvement, intentionally not built here and not
 		//   a blocker for going public.

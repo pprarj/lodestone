@@ -23,11 +23,11 @@ namespace Lodestone::Core::Papyrus
 
 		// --- Module registration list ---
 		// Stage C appends one line per module here:
-		//   ok &= BookFramework::RegisterFuncs(a_vm);  // C.2 - replaces DBF
-		//   ok &= SpellTomes::RegisterFuncs(a_vm);     // C.3 - replaces external plugin
-		//   ok &= ActorValues::RegisterFuncs(a_vm);    // C.4 - replaces external plugin
+		//   ok &= BookFramework::RegisterFuncs(a_vm);  // C.2 - book text
+		//   ok &= SpellTomes::RegisterFuncs(a_vm);     // C.3 - spell tomes
+		//   ok &= ActorValues::RegisterFuncs(a_vm);    // C.4 - actor values
 		ok &= PluginInfo::RegisterFuncs(a_vm);
-		ok &= CastTime::RegisterFuncs(a_vm);  // C.1/L0 - replaces external plugin
+		ok &= CastTime::RegisterFuncs(a_vm);  // C.1/L0 - cast time
 
 		if (ok) {
 			spdlog::info("Papyrus: all modules registered.");

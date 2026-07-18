@@ -23,8 +23,8 @@
 //   here on kDataLoaded) AND a native provider (RegisterCastTimeChannel, plugged
 //   into the dispatcher like any other module). The two are independent: the hook
 //   is passthrough until a consumer calls the native to register its channel.
-//   C.2 (external plugin) and C.3 (external plugin) also expose natives
-//   and plug into the dispatcher as Stage B predicted.
+//   C.2 (book text) and C.3 (spell tomes) also expose natives and plug into the
+//   dispatcher as Stage B predicted.
 //
 //   kDataLoaded is the install point for the hook: a vtable swap alone would work
 //   earlier, but the vtable must exist, and kDataLoaded is the established, safe
@@ -33,6 +33,7 @@
 // ---------------------------------------------------------------------------
 
 // RE/Skyrim.h and SKSE/SKSE.h come from PCH.h (force-included by CMake).
+#include "Core/BookFramework.h"
 #include "Core/CastTime.h"
 #include "Core/Log.h"
 #include "Core/Papyrus.h"
@@ -41,7 +42,8 @@
 namespace
 {
 	// SKSE message dispatch. Fans out to whichever modules need a lifecycle
-	// hook; today that is only CastTime.
+	// hook. CastTime installs its engine hook here; BookFramework (currently the
+	// Part 1.5 trace) installs its Book Menu sink here too.
 	void OnMessage(SKSE::MessagingInterface::Message* a_msg)
 	{
 		if (!a_msg) {
@@ -50,6 +52,7 @@ namespace
 
 		if (a_msg->type == SKSE::MessagingInterface::kDataLoaded) {
 			Lodestone::Core::CastTime::Install();
+			Lodestone::Core::BookFramework::Install();
 		}
 	}
 }
