@@ -1,160 +1,220 @@
 // BookFramework.cpp
 // Lodestone - Shared SKSE framework
 //
-// TRACE-ONLY implementation for Stage C.2 / L1, Part 1.5. Observes Book Menu
-// opens and logs; changes nothing. See BookFramework.h for the rationale (the
-// record-vs-display design question, why this trace is a passive event sink rather
-// than the eventual OpenBookMenu hook, and how to read the result).
+// Production implementation of the dynamic book-text capability (Stage C.2). See
+// BookFramework.h for the contract, the design rationale, and the persistence and
+// validation notes.
 //
-// Phase L1 - Stage C.2 / Part 1.5 (TRACE)
+// This SUPERSEDES the Part 1.5 trace (a passive MenuOpenCloseEvent sink that only
+// logged book opens). That trace answered where dynamic book text has to be
+// injected - the display path, because the game's book-open function takes the
+// page text as a raw BSString the record cannot hold. Its implementation is in git
+// history. Production hooks that function directly.
+//
+// EXCEPTION SAFETY: a C++ exception escaping the hook into the engine is undefined
+// behavior. The thunk wraps its body and always calls the original exactly once.
+//
+// Phase L1 - Stage C.2
 
 #include "BookFramework.h"
 
+#include <mutex>
 #include <string>
+#include <string_view>
+#include <unordered_map>
 
 namespace Lodestone::Core::BookFramework
 {
 	namespace
 	{
-		// One-line, ASCII-safe preview of arbitrary game text for the log. Book
-		// bodies carry newlines, formatting tags ([pagebreak], <p>, <font ...>) and
-		// possibly non-ASCII bytes; none of that belongs in a log line. Any byte
-		// outside printable ASCII becomes '.', and the preview is capped. The raw
-		// length is logged separately so a truncated preview is never mistaken for
-		// the whole text.
-		std::string PreviewAscii(const char* a_text, std::size_t a_max = 200)
-		{
-			if (!a_text) {
-				return "<null>";
-			}
+		// -------------------------------------------------------------------
+		// The text store - book FormID -> runtime text
+		//
+		// Written by the natives (on a Papyrus VM thread), read by the hook (on the
+		// game thread), so it is guarded by a mutex. Book opens are infrequent
+		// (nothing like the per-cast volume CastTime sees), so a lock on the open
+		// path costs nothing that matters.
+		//
+		// Empty store / no entry for a book => passthrough, vanilla text. That is
+		// the same silent degradation CastTime has: "no text set" reads like
+		// "plugin not installed".
+		//
+		// Session-scoped: not serialized to the save. The consumer re-establishes a
+		// book's text after load (see BookFramework.h - PERSISTENCE).
+		// -------------------------------------------------------------------
+		std::unordered_map<RE::FormID, std::string> g_bookText;
+		std::mutex                                  g_bookTextLock;
 
-			std::string out;
-			out.reserve(a_max);
-			std::size_t i = 0;
-			for (; a_text[i] != '\0' && i < a_max; ++i) {
-				const unsigned char c = static_cast<unsigned char>(a_text[i]);
-				out.push_back((c >= 0x20 && c <= 0x7E) ? static_cast<char>(c) : '.');
+		// Copies a book's stored text out under the lock. Returns false when the
+		// book has none (the caller then leaves the vanilla text alone).
+		bool LookupText(RE::FormID a_book, std::string& a_out)
+		{
+			std::lock_guard<std::mutex> lock(g_bookTextLock);
+			auto it = g_bookText.find(a_book);
+			if (it == g_bookText.end()) {
+				return false;
 			}
-			if (a_text[i] != '\0') {
-				out += "...";
-			}
-			return out;
+			a_out = it->second;
+			return true;
 		}
 
-		// Reads a book's RECORD body text (the inherited TESDescription, DESC field)
-		// into an ASCII preview, and reports its raw length through a_rawLen. This
-		// is the same call the engine makes to build the page text, so it is safe to
-		// repeat here at the low frequency of "a book was opened".
-		std::string ReadBookDescription(RE::TESObjectBOOK* a_book, std::size_t& a_rawLen)
+		bool ShouldLogOpens()
 		{
-			a_rawLen = 0;
-			if (!a_book) {
-				return "<no book>";
-			}
-
-			RE::BSString desc;
-			// static_cast selects the inherited TESDescription base subobject (the
-			// book body, DESC) rather than the itemCardDescription member (CNAM).
-			static_cast<RE::TESDescription*>(a_book)->GetDescription(desc, a_book);
-
-			const char* raw = desc.c_str();
-			a_rawLen = raw ? std::string_view(raw).size() : 0;
-			return PreviewAscii(raw);
+			auto* logger = spdlog::default_logger_raw();
+			return logger && logger->should_log(spdlog::level::debug);
 		}
 
-		void LogBookOpen()
+		// -------------------------------------------------------------------
+		// Hook: the game's book-open function (behind BookMenu::OpenBookMenu)
+		//
+		// The page text arrives as the first argument, a raw BSString. If the book
+		// has stored text, we hand the original the stored string instead; otherwise
+		// we pass the argument through unchanged. The original is called exactly
+		// once on every path, so a book with no stored text - or any failure here -
+		// opens exactly as vanilla would.
+		//
+		// The signature mirrors BookMenu::OpenBookMenu (RE/B/BookMenu.h). BSString
+		// caps at 64 KB (its size field is 16-bit); that is the engine's own limit
+		// on book text, not one this module adds.
+		// -------------------------------------------------------------------
+		struct OpenBookMenuHook
 		{
-			auto* book = RE::BookMenu::GetTargetForm();
-			if (!book) {
-				spdlog::info("BookTrace: Book Menu opened but GetTargetForm() is null - nothing to read.");
-				return;
-			}
-
-			// Null reference == opened from inventory (per BookMenu.h). Non-null ==
-			// a placed reference activated in the world.
-			auto* ref = RE::BookMenu::GetTargetReference();
-
-			const char* name = book->GetName();
-
-			std::size_t rawLen = 0;
-			const std::string preview = ReadBookDescription(book, rawLen);
-
-			// A short/empty record body while the on-screen page is full means the
-			// dynamic text is substituted at display time, not stored in the record.
-			// Flag it so the log reads at a glance.
-			const char* const recordHint = (rawLen == 0) ? " [record EMPTY - display-substituted?]" : "";
-
-			spdlog::info("BookTrace: OPEN book '{}' (0x{:08X}) | source={} | note={} tome={} teachesSkill={} teachesSpell={} | descLen={}{} desc=\"{}\"",
-				(name && *name) ? name : "<unnamed>",
-				book->GetFormID(),
-				ref ? "world" : "inventory",
-				book->IsNoteScroll() ? "yes" : "no",
-				book->IsBookTome() ? "yes" : "no",
-				book->TeachesSkill() ? "yes" : "no",
-				book->TeachesSpell() ? "yes" : "no",
-				rawLen,
-				recordHint,
-				preview);
-
-			if (ref) {
-				const char* refName = ref->GetName();
-				spdlog::info("BookTrace:   world ref 0x{:08X} '{}'",
-					ref->GetFormID(),
-					(refName && *refName) ? refName : "<unnamed>");
-			}
-		}
-
-		// Passive observer of menu open/close. It does NOT intercept the text path:
-		// the engine dispatches the event to us AFTER it has decided to open the
-		// menu, so this cannot alter what is displayed. That is exactly the property
-		// a trace needs. kContinue always, so every other sink still runs unchanged.
-		class BookMenuTraceSink : public RE::BSTEventSink<RE::MenuOpenCloseEvent>
-		{
-		public:
-			static BookMenuTraceSink* GetSingleton()
+			static void thunk(const RE::BSString& a_description, const RE::ExtraDataList* a_extraList,
+				RE::TESObjectREFR* a_ref, RE::TESObjectBOOK* a_book, const RE::NiPoint3& a_pos,
+				const RE::NiMatrix3& a_rot, float a_scale, bool a_useDefaultPos)
 			{
-				static BookMenuTraceSink singleton;
-				return &singleton;
-			}
+				const RE::BSString* desc = &a_description;
+				RE::BSString        replacement;
 
-			RE::BSEventNotifyControl ProcessEvent(const RE::MenuOpenCloseEvent* a_event,
-				RE::BSTEventSource<RE::MenuOpenCloseEvent>*) override
-			{
-				if (a_event && a_event->opening && a_event->menuName == RE::BookMenu::MENU_NAME) {
-					try {
-						LogBookOpen();
-					} catch (...) {
-						// A trace must never take the game down. Swallow and move on.
-						spdlog::warn("BookTrace: exception while logging a book open - ignored.");
+				try {
+					if (a_book) {
+						std::string text;
+						if (LookupText(a_book->GetFormID(), text)) {
+							replacement = RE::BSString{ std::string_view{ text } };
+							desc = &replacement;
+
+							if (ShouldLogOpens()) {
+								const char* name = a_book->GetName();
+								spdlog::debug("BookFramework: serving stored text for '{}' (0x{:08X}), {} chars.",
+									(name && *name) ? name : "<unnamed>",
+									a_book->GetFormID(),
+									text.size());
+							}
+						}
 					}
+				} catch (...) {
+					// Never take the game down over book text. Fall back to vanilla.
+					desc = &a_description;
 				}
-				return RE::BSEventNotifyControl::kContinue;
+
+				func(*desc, a_extraList, a_ref, a_book, a_pos, a_rot, a_scale, a_useDefaultPos);
 			}
 
-		private:
-			BookMenuTraceSink() = default;
-			BookMenuTraceSink(const BookMenuTraceSink&) = delete;
-			BookMenuTraceSink(BookMenuTraceSink&&) = delete;
-			BookMenuTraceSink& operator=(const BookMenuTraceSink&) = delete;
-			BookMenuTraceSink& operator=(BookMenuTraceSink&&) = delete;
+			static inline REL::Relocation<decltype(thunk)> func;
 		};
+
+		// -------------------------------------------------------------------
+		// Natives
+		//
+		// Error convention (Stage B.3): failure by return value, never by throwing.
+		// A null Book yields false (Bool) or "" (String).
+		// -------------------------------------------------------------------
+
+		// Lodestone.SetBookText(Book, String) -> Bool
+		// Replaces the stored text for a book. Shown next time the book opens.
+		bool SetBookText(RE::StaticFunctionTag*, RE::TESObjectBOOK* a_book, RE::BSFixedString a_text)
+		{
+			if (!a_book) {
+				spdlog::warn("BookFramework: SetBookText got a None book - ignored.");
+				return false;
+			}
+
+			std::lock_guard<std::mutex> lock(g_bookTextLock);
+			g_bookText[a_book->GetFormID()] = a_text.c_str() ? a_text.c_str() : "";
+			return true;
+		}
+
+		// Lodestone.AppendBookText(Book, String) -> Bool
+		// Appends to the stored text for a book, starting a new entry if none yet.
+		bool AppendBookText(RE::StaticFunctionTag*, RE::TESObjectBOOK* a_book, RE::BSFixedString a_text)
+		{
+			if (!a_book) {
+				spdlog::warn("BookFramework: AppendBookText got a None book - ignored.");
+				return false;
+			}
+
+			if (a_text.c_str()) {
+				std::lock_guard<std::mutex> lock(g_bookTextLock);
+				g_bookText[a_book->GetFormID()] += a_text.c_str();
+			}
+			return true;
+		}
+
+		// Lodestone.ClearBookText(Book) -> Bool
+		// Drops the stored text for a book; it reverts to its record text.
+		bool ClearBookText(RE::StaticFunctionTag*, RE::TESObjectBOOK* a_book)
+		{
+			if (!a_book) {
+				spdlog::warn("BookFramework: ClearBookText got a None book - ignored.");
+				return false;
+			}
+
+			std::lock_guard<std::mutex> lock(g_bookTextLock);
+			g_bookText.erase(a_book->GetFormID());
+			return true;
+		}
+
+		// Lodestone.GetBookText(Book) -> String
+		// Reads back the stored text, or "" if the book has none. Session-scoped -
+		// after a load, a book reads back "" until the consumer re-sets it.
+		RE::BSFixedString GetBookText(RE::StaticFunctionTag*, RE::TESObjectBOOK* a_book)
+		{
+			if (!a_book) {
+				return RE::BSFixedString("");
+			}
+
+			std::lock_guard<std::mutex> lock(g_bookTextLock);
+			auto it = g_bookText.find(a_book->GetFormID());
+			return RE::BSFixedString(it != g_bookText.end() ? it->second.c_str() : "");
+		}
+	}
+
+	bool RegisterFuncs(RE::BSScript::IVirtualMachine* a_vm)
+	{
+		if (!a_vm) {
+			spdlog::error("BookFramework: null VM, cannot register natives.");
+			return false;
+		}
+
+		// Registered on the "Lodestone" script, so consumers call them as
+		// Lodestone.SetBookText(book, text), etc.
+		a_vm->RegisterFunction("SetBookText", "Lodestone", SetBookText);
+		a_vm->RegisterFunction("AppendBookText", "Lodestone", AppendBookText);
+		a_vm->RegisterFunction("ClearBookText", "Lodestone", ClearBookText);
+		a_vm->RegisterFunction("GetBookText", "Lodestone", GetBookText);
+
+		spdlog::info("BookFramework: natives registered (SetBookText, AppendBookText, ClearBookText, GetBookText).");
+		return true;
 	}
 
 	void Install()
 	{
 		try {
-			auto* ui = RE::UI::GetSingleton();
-			if (!ui) {
-				spdlog::error("BookTrace: no UI singleton - book trace not installed.");
-				return;
-			}
+			// The game function behind BookMenu::OpenBookMenu. The ID is not in the
+			// shipped 3.5.3 headers; it is taken from the CommonLibSSE-NG source and
+			// is pending in-game confirmation (see BookFramework.h).
+			REL::Relocation<std::uintptr_t> target{ REL::RelocationID(50122, 51053) };
 
-			ui->AddEventSink<RE::MenuOpenCloseEvent>(BookMenuTraceSink::GetSingleton());
-			spdlog::info("BookTrace: Book Menu trace sink installed (TRACE ONLY - observes book opens, changes nothing).");
+			auto& trampoline = SKSE::GetTrampoline();
+			OpenBookMenuHook::func =
+				trampoline.write_branch<5>(target.address(), OpenBookMenuHook::thunk);
+
+			spdlog::info("BookFramework: hook installed on the book-open function. "
+						 "No text stored yet - passthrough until a consumer calls Lodestone.SetBookText.");
 		} catch (const std::exception& e) {
-			spdlog::error("BookTrace: failed to install: {} - book trace unavailable.", e.what());
+			spdlog::error("BookFramework: failed to install: {} - book text will not be modified.", e.what());
 		} catch (...) {
-			spdlog::error("BookTrace: failed to install (unknown exception) - book trace unavailable.");
+			spdlog::error("BookFramework: failed to install (unknown exception) - book text will not be modified.");
 		}
 	}
 }

@@ -42,8 +42,8 @@
 namespace
 {
 	// SKSE message dispatch. Fans out to whichever modules need a lifecycle
-	// hook. CastTime installs its engine hook here; BookFramework (currently the
-	// Part 1.5 trace) installs its Book Menu sink here too.
+	// hook. CastTime swaps a vtable entry; BookFramework installs a branch hook on
+	// the book-open function (which is why the trampoline is allocated below).
 	void OnMessage(SKSE::MessagingInterface::Message* a_msg)
 	{
 		if (!a_msg) {
@@ -70,6 +70,12 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse) {
 
     spdlog::info("{} v{} loaded successfully.",
         Lodestone::Version::kProjectName, Lodestone::Version::kString);
+
+    // Reserve trampoline space for branch hooks installed later (BookFramework
+    // detours the book-open function on kDataLoaded). A vtable swap like CastTime's
+    // needs none of this; a branch hook does, and it must be reserved before the
+    // hook is written. 64 bytes covers the current single branch hook.
+    SKSE::AllocTrampoline(64);
 
     // Native function registration. SKSE calls the dispatcher once the
     // Papyrus VM is ready - that happens later during load, not right now.

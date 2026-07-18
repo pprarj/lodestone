@@ -1,69 +1,82 @@
 // BookFramework.h
 // Lodestone - Shared SKSE framework
 //
-// Module: BookFramework (Core) - TRACE ONLY (Stage C.2 / L1, Part 1.5)
+// Module: BookFramework (Core)
+// Owns the dynamic book-text capability (Stage C.2): a consumer can supply
+// runtime-built text for a book (a journal that grows as the player plays, notes
+// assembled at runtime, and so on), and the plugin shows that text when the book
+// is opened.
 //
-// This is the LOG-ONLY trace build that precedes Lodestone's own book-text
-// module - the capability to let a consumer supply dynamic, runtime-built text
-// for a book (a journal that grows as the player plays, notes assembled at
-// runtime, and so on). It is NOT the production module. It changes NOTHING in
-// game: it does not hook the text path, registers no natives, and only OBSERVES
-// book-menu opens and logs, so that the production design (Part 2) rests on
-// measured fact rather than inference - the same discipline the CastTime module
-// was built with.
+// CORE, agnostic: the module knows no consumer by name. The consumer identifies a
+// book by its own Book form and hands the plugin the text; the plugin keys the
+// text by that book's FormID and serves it at display time.
 //
-// THE ENGINE FACTS (Part 1, read from the installed CommonLibSSE-NG 3.5.3 headers):
-//   - A book's static text lives in its record: TESObjectBOOK inherits
-//     TESDescription (RE/T/TESObjectBOOK.h), read via TESDescription::GetDescription.
-//   - The Book Menu is handed the page text as a RAW BSString argument:
-//     BookMenu::OpenBookMenu(const BSString& a_description, ..., TESObjectBOOK*, ...)
-//     (RE/B/BookMenu.h). A raw string can carry arbitrary runtime text that the
-//     record's localized-string field cannot hold.
+// PUBLIC API (declared in Lodestone.psc, registered on the "Lodestone" script):
 //
-// THE DESIGN QUESTION THIS ANSWERS:
-//   For a book whose displayed text is built at runtime, is that text stored back
-//   into the RECORD before it opens, or is it SUBSTITUTED at display time (record
-//   left as a placeholder)? The answer decides the production shape:
-//     - record carries the text  => a native that writes the record is enough,
-//       no engine hook on the display path.
-//     - record is a placeholder, text substituted at open => the production module
-//       must hook the display path (OpenBookMenu) to inject the runtime string.
-//   Given OpenBookMenu takes a raw BSString - exactly what arbitrary runtime text
-//   needs, and more than the localized-string record can express - the display
-//   path is the likely answer, but this trace confirms it on THIS build instead of
-//   assuming.
+//   Bool   Function SetBookText(Book akBook, String asText) global native
+//   Bool   Function AppendBookText(Book akBook, String asText) global native
+//   Bool   Function ClearBookText(Book akBook) global native
+//   String Function GetBookText(Book akBook) global native
 //
-// WHY THIS TRACE IS A PASSIVE SINK, NOT THAT HOOK:
-//   OpenBookMenu is a static engine function, and CommonLibSSE-NG 3.5.3 exposes NO
-//   address-library ID for it in the shipped headers (only RTTI/VTABLE for
-//   BookMenu). Hooking it needs an ID resolved from the address library (a Part 2
-//   task) or a fragile prologue detour - neither is zero-risk, and a trace must be.
-//   So this trace registers a passive MenuOpenCloseEvent sink on RE::UI (fully
-//   addressable, no trampoline) and, when the "Book Menu" opens, reads the target
-//   book through BookMenu::GetTargetForm / GetTargetReference and logs its RECORD
-//   description via TESDescription.
+//   Book maps to RE::TESObjectBOOK* (a form pointer parameter, verified the same
+//   way CastTime's GlobalVariable was: RE/P/PackUnpack.h registers a form pointer
+//   under its FORMTYPE and unpacks it back to the same pointer type). SetBookText
+//   replaces the stored text, AppendBookText adds to it, ClearBookText drops it
+//   (the book reverts to its record text), GetBookText reads it back.
 //
-// HOW TO READ THE RESULT:
-//   Open a book whose text is supplied dynamically in the load order and compare
-//   the log against the screen. If this logs a SHORT or empty record description
-//   while the screen shows the full dynamic page, the text is substituted at
-//   display and the production module needs the display hook, not a record write.
-//   The trace also captures the exact open flow the Part 2 hook depends on: that
-//   the menu event fires, that GetTargetForm resolves the book, and whether the
-//   book was opened from inventory or from a world reference. Run in TWO
-//   independent load orders (one heavy, one clean vanilla for the baseline),
-//   exactly as the CastTime trace was.
+// HOW IT WORKS (the design question the Part 1.5 trace was built to settle):
+//   A book's page text reaches the engine's Book Menu as a RAW BSString argument
+//   to the game's book-open function (RE/B/BookMenu.h). The record's own text is a
+//   localized-string id that cannot hold arbitrary runtime text, so dynamic text
+//   must be injected on the DISPLAY path, not written into the record. This module
+//   therefore hooks the game's book-open function: when a book with stored text is
+//   opened, it substitutes the stored string for the argument and calls the
+//   original; when a book has no stored text, it passes through untouched (vanilla
+//   text). That passthrough is the same silent-degradation property CastTime has:
+//   "no text set" is indistinguishable from "plugin not installed".
 //
-// Phase L1 - Stage C.2 / Part 1.5 (TRACE)
+//   NOTE (pending in-game validation): the hook target is the game function behind
+//   BookMenu::OpenBookMenu. CommonLibSSE-NG 3.5.3 exposes no address-library ID for
+//   it in the shipped headers, so the ID is taken from the CommonLibSSE-NG source
+//   (RELOCATION_ID(50122, 51053)) and must be confirmed in game before this is
+//   trusted. See BookFramework.cpp.
+//
+// PERSISTENCE (v1): the stored text lives in memory for the session only - it is
+//   NOT serialized into the save. A consumer re-establishes a book's text after
+//   each load (SetBookText from its own Papyrus state), the same runtime-registration
+//   model CastTime uses. Co-save serialization is a documented FUTURE improvement,
+//   deliberately not built here.
+//
+// ORDERING: SetBookText must land before the book is opened for the new text to
+//   show. A consumer sets it at load/init or whenever the underlying data changes.
+//
+// This module has TWO seams, like CastTime: RegisterFuncs(vm) plugs its natives
+// into the Papyrus dispatcher (Core/Papyrus.cpp), and Install() installs the engine
+// hook from plugin.cpp on kDataLoaded.
+//
+// Phase L1 - Stage C.2
 
 #pragma once
 
 namespace Lodestone::Core::BookFramework
 {
-	// Registers the passive Book Menu trace sink on RE::UI. Must be called once.
+	// Registers this module's native functions with the Papyrus VM.
+	// Called by Lodestone::Core::Papyrus::Register - never called directly.
 	//
-	// Call site: plugin.cpp, on SKSE::MessagingInterface::kDataLoaded (the UI
-	// singleton exists by then). Never throws - failures are logged and swallowed,
-	// and simply leave no trace sink installed.
+	// Registers: SetBookText, AppendBookText, ClearBookText, GetBookText on the
+	// "Lodestone" script.
+	//
+	// Returns false if any registration failed.
+	bool RegisterFuncs(RE::BSScript::IVirtualMachine* a_vm);
+
+	// Installs the engine hook on the game's book-open function. Must be called
+	// exactly once - NOT idempotent.
+	//
+	// Call site: plugin.cpp, on SKSE::MessagingInterface::kDataLoaded. Requires the
+	// SKSE trampoline to be allocated first (SKSE::AllocTrampoline in
+	// SKSEPluginLoad), because this is a branch hook, not a vtable swap.
+	//
+	// Never throws. Every failure path is logged and swallowed, and leaves books at
+	// their vanilla text.
 	void Install();
 }

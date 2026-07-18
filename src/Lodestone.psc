@@ -52,3 +52,33 @@ String Function GetVersionString() global native
 ; on a None argument, or when a channel from a different registration is already
 ; held. If the DLL is absent the call yields the VM default False as well.
 Bool Function RegisterCastTimeChannel(GlobalVariable akMultiplier, GlobalVariable akOffset) global native
+
+; --- BookFramework (added in DLL 1.2.0) ------------------------------------
+
+; Supply runtime-built text for a book. When akBook is opened, the DLL shows the
+; text you stored instead of the book's own text. Identify the book by its own
+; Book form; the DLL keys the text by that form and knows no mod by name.
+;
+; The stored text lives for the SESSION only - it is not saved. Re-establish a
+; book's text after each load (call SetBookText from your own Papyrus state),
+; the same runtime model the cast time channel uses. Set it before the book is
+; opened for the new text to show. A book with no stored text opens unchanged
+; (vanilla text). Book text over 64 KB is truncated - the engine's own limit.
+
+; Replaces the stored text for akBook.
+; Returns True on success, False on a None book (or the VM default False if the
+; DLL is absent).
+Bool Function SetBookText(Book akBook, String asText) global native
+
+; Appends asText to akBook's stored text, starting fresh if none is stored yet.
+; Returns True on success, False on a None book.
+Bool Function AppendBookText(Book akBook, String asText) global native
+
+; Drops akBook's stored text; the book reverts to its own text.
+; Returns True on success, False on a None book.
+Bool Function ClearBookText(Book akBook) global native
+
+; Reads back akBook's stored text, or "" if none is stored (including after a
+; load, until you re-set it). For display or bookkeeping - not a version gate.
+; Returns "" on a None book, or the VM default "" if the DLL is absent.
+String Function GetBookText(Book akBook) global native
