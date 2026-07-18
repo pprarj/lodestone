@@ -37,6 +37,7 @@
 #include "Core/CastTime.h"
 #include "Core/Log.h"
 #include "Core/Papyrus.h"
+#include "Core/SpellTomes.h"
 #include "Version.h"
 
 namespace
@@ -53,6 +54,7 @@ namespace
 		if (a_msg->type == SKSE::MessagingInterface::kDataLoaded) {
 			Lodestone::Core::CastTime::Install();
 			Lodestone::Core::BookFramework::Install();
+			Lodestone::Core::SpellTomes::Install();
 		}
 	}
 }
