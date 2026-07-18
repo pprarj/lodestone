@@ -45,10 +45,10 @@ add_commonlibsse_plugin(
     AUTHOR "Awrawra"
     SOURCES
         src/plugin.cpp
-        src/Log.cpp
-        src/Papyrus.cpp
-        src/PluginInfo.cpp
-        src/CastTime.cpp
+        src/Core/Log.cpp
+        src/Core/Papyrus.cpp
+        src/Core/PluginInfo.cpp
+        src/Modules/CastTime.cpp
 )
 
 target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_23)

@@ -14,7 +14,7 @@
 
 #include <format>
 
-namespace Lodestone::Log
+namespace Lodestone::Core::Log
 {
 	bool Init()
 	{

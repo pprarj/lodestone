@@ -17,7 +17,7 @@
 
 #pragma once
 
-namespace Lodestone::Papyrus
+namespace Lodestone::Core::Papyrus
 {
 	// Registration callback handed to SKSE's Papyrus interface. SKSE calls this
 	// once, when the VM is ready. Fans out to every module's RegisterFuncs.

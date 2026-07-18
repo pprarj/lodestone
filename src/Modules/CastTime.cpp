@@ -35,7 +35,7 @@
 
 #include "CastTime.h"
 
-namespace Lodestone::CastTime
+namespace Lodestone::Modules::CastTime
 {
 	namespace
 	{

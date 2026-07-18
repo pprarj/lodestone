@@ -30,9 +30,9 @@
 // ---------------------------------------------------------------------------
 
 // RE/Skyrim.h and SKSE/SKSE.h come from PCH.h (force-included by CMake).
-#include "CastTime.h"
-#include "Log.h"
-#include "Papyrus.h"
+#include "Core/Log.h"
+#include "Core/Papyrus.h"
+#include "Modules/CastTime.h"
 #include "Version.h"
 
 namespace
@@ -46,7 +46,7 @@ namespace
 		}
 
 		if (a_msg->type == SKSE::MessagingInterface::kDataLoaded) {
-			Lodestone::CastTime::Install();
+			Lodestone::Modules::CastTime::Install();
 		}
 	}
 }
@@ -56,7 +56,7 @@ namespace
 SKSEPluginLoad(const SKSE::LoadInterface* a_skse) {
     // Without a log there's no way to diagnose anything - abort the load
     // explicitly instead of continuing blind.
-    if (!Lodestone::Log::Init()) {
+    if (!Lodestone::Core::Log::Init()) {
         SKSE::stl::report_and_fail("SKSE log directory not provided.");
     }
 
@@ -67,7 +67,7 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse) {
 
     // Native function registration. SKSE calls the dispatcher once the
     // Papyrus VM is ready - that happens later during load, not right now.
-    if (!SKSE::GetPapyrusInterface()->Register(Lodestone::Papyrus::Register)) {
+    if (!SKSE::GetPapyrusInterface()->Register(Lodestone::Core::Papyrus::Register)) {
         spdlog::error("Failed to register the Papyrus callback - natives unavailable.");
         return false;
     }

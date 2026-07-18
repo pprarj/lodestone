@@ -25,7 +25,7 @@
 
 #include "Version.h"
 
-namespace Lodestone::PluginInfo
+namespace Lodestone::Core::PluginInfo
 {
 	namespace
 	{
