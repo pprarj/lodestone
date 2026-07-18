@@ -1,11 +1,16 @@
 // CastTime.cpp
 // Lodestone - Shared SKSE framework
 //
-// Production implementation of Stage C.1: the external plugin replacement.
+// Production implementation of the cast time capability (the external plugin replacement).
 //
-// Every rule below comes from a specific line of the Part 1.5 trace log, run on
-// TWO independent load orders (an overhaul mod active, and a clean vanilla new game).
-// Nothing here is inferred. The evidence is quoted inline at each decision.
+// Phase L0 moved this module from Domain to Core. The hook, the filter, and the
+// formula are UNCHANGED and stay validated: every rule in Apply() below still
+// comes from a specific line of the original Part 1.5 trace log, run on TWO
+// independent load orders (an overhaul mod active, and a clean vanilla new game). What
+// changed is only the SOURCE of the two globals: they used to be looked up by a
+// hardcoded ESP + FormID on kDataLoaded; they are now REGISTERED at runtime by the
+// consumer, which passes its own GlobalVariable records through a native. The
+// per-cast behavior is identical once a consumer registers the same two globals.
 //
 // HOOK TARGET (Part 1, read from the CommonLibSSE-NG headers):
 //
@@ -31,83 +36,40 @@
 // natives, applied to hooks: nothing this plugin installs may throw across an
 // engine boundary.
 //
-// Phase 16 - Stage C.1 / Part 2
+// Phase L0 (was Phase 16 - Stage C.1 / Part 2)
 
 #include "CastTime.h"
 
-namespace Lodestone::Modules::CastTime
+#include <atomic>
+#include <mutex>
+
+namespace Lodestone::Core::CastTime
 {
 	namespace
 	{
 		// -------------------------------------------------------------------
-		// Globals - the Papyrus -> native channel
+		// The registered channel - the Papyrus -> native link
 		//
-		// Cached once on kDataLoaded. Form pointers are stable for the lifetime
-		// of the process once plugin data is loaded, so this is a lookup per
-		// GAME LOAD, not per cast. The per-cast cost is two float reads.
+		// These used to be resolved on kDataLoaded from a hardcoded ESP. They are
+		// now handed in by the consumer through RegisterCastTimeChannel (see
+		// below). The per-cast cost is still two float reads through two stable
+		// pointers.
 		//
-		// Both null => the CastTime module ESP is not installed => passthrough,
-		// and the hook costs one pointer compare. That is the "silent
-		// degradation" property the globals channel was chosen for.
+		// Both null => no consumer has registered => passthrough, and the hook
+		// costs two pointer compares. That is the same "silent degradation"
+		// property the old lookup had: "not registered yet" reads identically to
+		// "not installed".
+		//
+		// THREADING: the hook (Apply) runs on the game thread; registration runs
+		// on a Papyrus VM thread. The pointers are therefore atomic so the hook
+		// reads them lock-free with no torn/reordered read. On x64 an acquire load
+		// of an aligned pointer is a plain mov, so the hot path pays nothing over a
+		// raw pointer read. g_registerLock serializes registrants against each
+		// other only (the check-then-store decision); the hook never touches it.
 		// -------------------------------------------------------------------
-
-		constexpr auto kCastTimeFile = "IntelligenceMatters_CastTime.esp";
-
-		// CAUTION, confirmed in TESDataHandler.cpp:136-139 - the FormID is
-		// assembled by ADDITION, not by OR:
-		//
-		//     formID  = file->compileIndex << 24;            // 0xFE << 24
-		//     formID += file->smallFileCompileIndex << 12;   // 0x001 << 12
-		//     formID += a_localFormID;                       // low 12 bits ONLY
-		//
-		// CastTime.esp is an ESL (FE 001), so the full IDs seen in xEdit are
-		// FE001002 / FE001003. Passing those whole would silently produce
-		// garbage. Only the low 12 bits go in.
-		constexpr RE::FormID kMultiplierLocalID = 0x002;  // IM_CT_Multiplier -> FE001002
-		constexpr RE::FormID kOffsetLocalID     = 0x003;  // IM_CT_Offset     -> FE001003
-
-		RE::TESGlobal* g_multiplier = nullptr;
-		RE::TESGlobal* g_offset     = nullptr;
-
-		// Resolves both globals. Leaves them null on any failure, which is a
-		// valid, expected state (module not installed) - not an error.
-		void ResolveGlobals()
-		{
-			auto* dataHandler = RE::TESDataHandler::GetSingleton();
-			if (!dataHandler) {
-				spdlog::error("CastTime: no TESDataHandler - cast time will not be modified.");
-				return;
-			}
-
-			g_multiplier = dataHandler->LookupForm<RE::TESGlobal>(kMultiplierLocalID, kCastTimeFile);
-			g_offset     = dataHandler->LookupForm<RE::TESGlobal>(kOffsetLocalID, kCastTimeFile);
-
-			// This pair of lines is the most important thing this module logs.
-			// It is the difference between "cast time is broken" and "the
-			// CastTime module is not installed" - which, without it, is
-			// indistinguishable from the outside and unanswerable in a support
-			// thread.
-			if (g_multiplier && g_offset) {
-				spdlog::info("CastTime: globals resolved from {} (IM_CT_Multiplier=0x{:08X}, IM_CT_Offset=0x{:08X}) - module ACTIVE.",
-					kCastTimeFile, g_multiplier->GetFormID(), g_offset->GetFormID());
-			} else {
-				// Partial resolution means the ESP is loaded but its records do
-				// not match what this build expects - a real problem, unlike a
-				// clean "both null".
-				if (g_multiplier || g_offset) {
-					spdlog::warn("CastTime: {} is loaded but only ONE of the two globals resolved "
-								 "(multiplier={}, offset={}). Treating as inactive.",
-						kCastTimeFile,
-						g_multiplier ? "ok" : "MISSING",
-						g_offset ? "ok" : "MISSING");
-					g_multiplier = nullptr;
-					g_offset = nullptr;
-				} else {
-					spdlog::info("CastTime: {} not found - module INACTIVE, cast time untouched (passthrough).",
-						kCastTimeFile);
-				}
-			}
-		}
+		std::atomic<RE::TESGlobal*> g_multiplier{ nullptr };
+		std::atomic<RE::TESGlobal*> g_offset{ nullptr };
+		std::mutex                  g_registerLock;
 
 		// -------------------------------------------------------------------
 		// Debug trace
@@ -143,9 +105,14 @@ namespace Lodestone::Modules::CastTime
 		// -------------------------------------------------------------------
 		void Apply(RE::MagicCaster* a_this)
 		{
-			// 0. Module installed? Two pointer compares, cuts 100% when the
-			//    CastTime ESP is absent.
-			if (!g_multiplier || !g_offset) {
+			// 0. Channel registered? Two acquire loads + two pointer compares,
+			//    cuts 100% when no consumer has registered. Loaded into locals
+			//    once so the formula below reads a consistent pair even if a
+			//    registration lands mid-hook (worst case: one extra passthrough
+			//    cast during that instant).
+			RE::TESGlobal* mult   = g_multiplier.load(std::memory_order_acquire);
+			RE::TESGlobal* offset = g_offset.load(std::memory_order_acquire);
+			if (!mult || !offset) {
 				return;
 			}
 
@@ -222,11 +189,11 @@ namespace Lodestone::Modules::CastTime
 			//    ONLY in castingTimer. Building the formula on either of the other
 			//    two would silently discard dual casting and every charge-time
 			//    perk.
-			const float before = a_this->castingTimer;
-			const float mult   = g_multiplier->value;
-			const float offset = g_offset->value;
+			const float before   = a_this->castingTimer;
+			const float multVal   = mult->value;
+			const float offsetVal = offset->value;
 
-			float after = (before * mult) + offset;
+			float after = (before * multVal) + offsetVal;
 
 			// A negative timer is not a state the engine should ever be handed.
 			// The globals are MCM-tunable, so this is reachable from a user
@@ -243,7 +210,7 @@ namespace Lodestone::Modules::CastTime
 				spdlog::debug("CastTime: '{}' (0x{:08X}) {:.4f} -> {:.4f} (mult={:.4f} offset={:.4f})",
 					magicItem->GetName() ? magicItem->GetName() : "<unnamed>",
 					magicItem->GetFormID(),
-					before, after, mult, offset);
+					before, after, multVal, offsetVal);
 			}
 		}
 
@@ -306,17 +273,90 @@ namespace Lodestone::Modules::CastTime
 		//
 		// The implementation is in git history and in the Part 1.5 summary.
 		// -------------------------------------------------------------------
+
+		// -------------------------------------------------------------------
+		// Native: Lodestone.RegisterCastTimeChannel(GlobalVariable, GlobalVariable) -> Bool
+		//
+		// The consumer hands in the two globals it owns and drives from its own
+		// Papyrus state. From this call on, the hook scales the player's cast time
+		// by those globals' value fields. Before it, the hook is passthrough.
+		//
+		// SINGLE CHANNEL - v1 DECISION (the one semantics choice worth a review):
+		//   v1 is one channel, first-registrant-wins. Re-registering the SAME pair
+		//   is an idempotent refresh (the consumer may re-register on every game
+		//   load) and is accepted silently. A DISTINCT second registrant while a
+		//   channel is already held is warned and REJECTED - the held channel is
+		//   left untouched and the native returns false. This is standard SKSE
+		//   framework posture (external plugin was the single owner of this same hook). Rich
+		//   arbitration between several cast-time mods (chaining, summing,
+		//   priority) is a FUTURE improvement, intentionally not built here and not
+		//   a blocker for going public.
+		//
+		// Error convention (Stage B.3): reports failure by return value, never by
+		// throwing. Returns true when the CALLER's channel is the active one after
+		// this call; false on a null argument or a rejected second registrant.
+		// -------------------------------------------------------------------
+		bool RegisterCastTimeChannel(RE::StaticFunctionTag*, RE::TESGlobal* a_multiplier, RE::TESGlobal* a_offset)
+		{
+			if (!a_multiplier || !a_offset) {
+				spdlog::warn("CastTime: RegisterCastTimeChannel got a null global (multiplier={}, offset={}) - ignored.",
+					a_multiplier ? "ok" : "NULL",
+					a_offset ? "ok" : "NULL");
+				return false;
+			}
+
+			std::lock_guard<std::mutex> lock(g_registerLock);
+
+			RE::TESGlobal* curMult   = g_multiplier.load(std::memory_order_acquire);
+			RE::TESGlobal* curOffset = g_offset.load(std::memory_order_acquire);
+
+			if (curMult && curOffset) {
+				// A channel is already held.
+				if (curMult == a_multiplier && curOffset == a_offset) {
+					// Same pair - idempotent refresh (e.g. re-register on reload).
+					spdlog::debug("CastTime: channel re-registered with the same globals - no-op.");
+					return true;
+				}
+
+				// Distinct second registrant - single-channel v1 policy.
+				spdlog::warn("CastTime: a second, DIFFERENT cast time channel tried to register "
+							 "(new multiplier=0x{:08X}, offset=0x{:08X}); the first channel "
+							 "(multiplier=0x{:08X}, offset=0x{:08X}) keeps ownership. Ignoring the new one.",
+					a_multiplier->GetFormID(), a_offset->GetFormID(),
+					curMult->GetFormID(), curOffset->GetFormID());
+				return false;
+			}
+
+			// First registration. Store offset first, multiplier last: the hook's
+			// guard checks both, and publishing the multiplier last (release) means
+			// a hook that observes a set multiplier also observes the offset.
+			g_offset.store(a_offset, std::memory_order_release);
+			g_multiplier.store(a_multiplier, std::memory_order_release);
+
+			spdlog::info("CastTime: cast time channel registered (multiplier=0x{:08X}, offset=0x{:08X}) - module ACTIVE.",
+				a_multiplier->GetFormID(), a_offset->GetFormID());
+			return true;
+		}
+	}
+
+	bool RegisterFuncs(RE::BSScript::IVirtualMachine* a_vm)
+	{
+		if (!a_vm) {
+			spdlog::error("CastTime: null VM, cannot register natives.");
+			return false;
+		}
+
+		// Registered on the "Lodestone" script (same script as PluginInfo), so the
+		// consumer calls it as Lodestone.RegisterCastTimeChannel(mult, offset).
+		a_vm->RegisterFunction("RegisterCastTimeChannel", "Lodestone", RegisterCastTimeChannel);
+
+		spdlog::info("CastTime: natives registered (RegisterCastTimeChannel).");
+		return true;
 	}
 
 	void Install()
 	{
 		try {
-			// Globals first: if the hook installs and the lookup then throws, the
-			// hook would be live with null globals. That is harmless by design
-			// (passthrough), but this ordering means the log tells the truth
-			// about state in every case.
-			ResolveGlobals();
-
 			// [0] = the MagicCaster branch of ActorMagicCaster's multiple
 			// inheritance (MagicCaster@00, SimpleAnimationGraphManagerHolder@48,
 			// BSTEventSink@60). Index 0x14 lives in that branch.
@@ -325,7 +365,9 @@ namespace Lodestone::Modules::CastTime
 			SetCastingTimerForChargeHook::func =
 				vtbl.write_vfunc(SetCastingTimerForChargeHook::idx, SetCastingTimerForChargeHook::thunk);
 
-			spdlog::info("CastTime: hook installed on ActorMagicCaster vtable (SetCastingTimerForCharge @0x14).");
+			spdlog::info("CastTime: hook installed on ActorMagicCaster vtable (SetCastingTimerForCharge @0x14). "
+						 "No channel registered yet - passthrough until a consumer calls "
+						 "Lodestone.RegisterCastTimeChannel.");
 		} catch (const std::exception& e) {
 			spdlog::error("CastTime: failed to install: {} - cast time will not be modified.", e.what());
 		} catch (...) {

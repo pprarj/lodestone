@@ -15,7 +15,7 @@ cmake_minimum_required(VERSION 3.21)
 # DLL version - INDEPENDENT of the mod version on Nexus.
 project(
     Lodestone
-    VERSION 1.0.0
+    VERSION 1.1.0
     LANGUAGES CXX
 )
 
@@ -48,7 +48,7 @@ add_commonlibsse_plugin(
         src/Core/Log.cpp
         src/Core/Papyrus.cpp
         src/Core/PluginInfo.cpp
-        src/Modules/CastTime.cpp
+        src/Core/CastTime.cpp
 )
 
 target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_23)

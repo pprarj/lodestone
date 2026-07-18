@@ -19,20 +19,23 @@
 //   no Papyrus surface and a different lifecycle (the vtable must exist, but
 //   the VM need not be up). So hook installation gets its own seam here.
 //
-//   The exception is specific to C.1, which has no native at all - its channel
-//   is a pair of globals. C.2 (external plugin) and C.3
-//   (external plugin) DO expose natives and will plug into the dispatcher as
-//   Stage B predicted.
+//   Phase L0 update: CastTime now uses BOTH seams. It is an engine hook (installed
+//   here on kDataLoaded) AND a native provider (RegisterCastTimeChannel, plugged
+//   into the dispatcher like any other module). The two are independent: the hook
+//   is passthrough until a consumer calls the native to register its channel.
+//   C.2 (external plugin) and C.3 (external plugin) also expose natives
+//   and plug into the dispatcher as Stage B predicted.
 //
-//   kDataLoaded is the install point, and C.1 needs it: a vtable swap alone
-//   would work earlier, but the module also caches the IM_CT_* TESGlobal
-//   pointers, and those only resolve once plugin data is loaded.
+//   kDataLoaded is the install point for the hook: a vtable swap alone would work
+//   earlier, but the vtable must exist, and kDataLoaded is the established, safe
+//   seam. The module no longer caches any globals here - they arrive at runtime
+//   through the native.
 // ---------------------------------------------------------------------------
 
 // RE/Skyrim.h and SKSE/SKSE.h come from PCH.h (force-included by CMake).
+#include "Core/CastTime.h"
 #include "Core/Log.h"
 #include "Core/Papyrus.h"
-#include "Modules/CastTime.h"
 #include "Version.h"
 
 namespace
@@ -46,7 +49,7 @@ namespace
 		}
 
 		if (a_msg->type == SKSE::MessagingInterface::kDataLoaded) {
-			Lodestone::Modules::CastTime::Install();
+			Lodestone::Core::CastTime::Install();
 		}
 	}
 }
