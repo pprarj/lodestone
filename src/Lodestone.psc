@@ -82,3 +82,38 @@ Bool Function ClearBookText(Book akBook) global native
 ; load, until you re-set it). For display or bookkeeping - not a version gate.
 ; Returns "" on a None book, or the VM default "" if the DLL is absent.
 String Function GetBookText(Book akBook) global native
+
+; --- SpellTomes (added in DLL 1.3.0) ---------------------------------------
+
+; With the DLL installed, reading a spell tome learns the spell exactly as
+; vanilla but does NOT consume the book. Learning is untouched - that is not
+; this DLL's concern; the only change is that the tome is kept. To be told when
+; a tome is read, register a form whose script implements OnSpellTomeRead; to
+; finally consume a tome (e.g. after your own study finishes), call
+; ConsumeSpellTome. If nothing ever calls ConsumeSpellTome, the tome stays.
+
+; Registers akReceiver's script to receive OnSpellTomeRead. Registration is
+; session-scoped (not saved) - re-register after each load. akReceiver is any
+; form carrying the script (a quest, an alias, a magic effect, a reference).
+; Returns True on success, False on a None form.
+Bool Function RegisterForSpellTomeRead(Form akReceiver) global native
+
+; Stops akReceiver from receiving OnSpellTomeRead.
+; Returns True on success, False on a None form.
+Bool Function UnregisterForSpellTomeRead(Form akReceiver) global native
+
+; Removes one copy of akBook from akActor - the explicit "consume the tome now"
+; call. Use it when your own logic decides the book should be eaten. Nothing in
+; the DLL consumes a tome on its own.
+; Returns True on success, False on a None argument.
+Bool Function ConsumeSpellTome(Book akBook, ObjectReference akActor) global native
+
+; --- Event, implemented by a registered script -----------------------------
+; Sent to each form registered via RegisterForSpellTomeRead, every time a spell
+; tome is read. akBook is the tome, akReader is who read it (normally the player).
+; The spell is already learned by the time this fires; the book has been kept.
+; Declare it in your script exactly as below:
+;
+;   Event OnSpellTomeRead(Book akBook, ObjectReference akReader)
+;       ; your logic here (start study, consume the tome via ConsumeSpellTome, ...)
+;   EndEvent

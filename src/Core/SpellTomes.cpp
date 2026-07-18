@@ -1,104 +1,167 @@
 // SpellTomes.cpp
 // Lodestone - Shared SKSE framework
 //
-// TRACE-ONLY implementation for Stage C.3 / L2, Part 1.5. Observes book
-// activations and logs the spell-tome ones; changes nothing. See SpellTomes.h for
-// the rationale, the layer note, and the question this trace answers.
+// Production implementation of the "keep the spell tome" capability (Stage C.3).
+// See SpellTomes.h for the contract, the deliberately narrow scope (learning is
+// not this module's concern), and the validation note.
+//
+// This SUPERSEDES the Part 1.5 trace (a passive vtable hook on TESObjectBOOK
+// Activate that only logged). Investigation identified the real seam as
+// TESObjectBOOK::Read - the function that teaches the spell and returns whether the
+// book is consumed - so production hooks that instead. The trace is in git history.
 //
 // EXCEPTION SAFETY: a C++ exception escaping a hook into the engine is undefined
-// behavior. The thunk calls the original first (so vanilla behavior is intact no
-// matter what) and wraps its own logging in try/catch.
+// behavior. The thunk calls the original first (so learning is never affected) and
+// wraps everything after it; on any failure it returns the original result, i.e.
+// vanilla consumption behavior.
 //
-// Phase L2 - Stage C.3 / Part 1.5 (TRACE)
+// Phase L2 - Stage C.3
 
 #include "SpellTomes.h"
+
+#include "SKSE/RegistrationSet.h"
 
 namespace Lodestone::Core::SpellTomes
 {
 	namespace
 	{
+		// Registered consumers. SendEvent/QueueEvent dispatches OnSpellTomeRead to
+		// each registered script. Session-scoped: not serialized, so a consumer
+		// re-registers after load (the runtime model the other modules use). The
+		// set has its own lock, so the natives and the hook can touch it safely.
+		SKSE::RegistrationSet<RE::TESObjectBOOK*, RE::TESObjectREFR*> g_readReg{ "OnSpellTomeRead" };
+
 		bool ShouldLog()
 		{
 			auto* logger = spdlog::default_logger_raw();
-			return logger && logger->should_log(spdlog::level::info);
+			return logger && logger->should_log(spdlog::level::debug);
 		}
 
 		// -------------------------------------------------------------------
-		// Hook: TESObjectBOOK::Activate - vfunc 0x37
+		// Hook: TESObjectBOOK::Read - the game function at RELOCATION_ID(17439, 17842)
 		//
-		// Shared across every book (the vtable belongs to the form type). The
-		// original runs FIRST and unconditionally - the trace never alters what a
-		// read does. After it, we log only spell-tome activations (TeachesSpell) to
-		// keep the noise down, capturing enough to tell whether this fires for
-		// inventory reads as well as world reads.
+		// The original runs FIRST and unconditionally: it teaches the spell (or
+		// skill) exactly as vanilla, and returns whether the book should be
+		// consumed. Learning is never touched. For a spell tome we then return
+		// FALSE, so the caller keeps the book, and queue OnSpellTomeRead for any
+		// registered consumer. Non-tome books are passed through with the original's
+		// own return value.
+		//
+		// PENDING VALIDATION: this assumes the caller uses Read's return value to
+		// decide whether to remove the book. If instead Read removes the book
+		// itself, suppression would need a different seam - to be confirmed in game.
 		// -------------------------------------------------------------------
-		struct ActivateHook
+		struct ReadHook
 		{
-			static bool thunk(RE::TESObjectBOOK* a_this, RE::TESObjectREFR* a_targetRef,
-				RE::TESObjectREFR* a_activatorRef, std::uint8_t a_arg3, RE::TESBoundObject* a_object,
-				std::int32_t a_targetCount)
+			static bool thunk(RE::TESObjectBOOK* a_this, RE::TESObjectREFR* a_reader)
 			{
-				const bool result = func(a_this, a_targetRef, a_activatorRef, a_arg3, a_object, a_targetCount);
+				const bool consumed = func(a_this, a_reader);
 
 				try {
-					if (a_this && a_this->TeachesSpell() && ShouldLog()) {
-						const char* bookName = a_this->GetName();
+					if (a_this && a_this->TeachesSpell()) {
+						// QueueEvent defers the dispatch off this hook's call stack
+						// onto a game task - safer than reaching into the VM from
+						// deep in the read path.
+						g_readReg.QueueEvent(a_this, a_reader);
 
-						auto* spell = a_this->GetSpell();
-						const char* spellName = spell ? spell->GetName() : nullptr;
-
-						// a_targetRef is usually the book reference being activated;
-						// a_activatorRef is who activated it (the player, normally).
-						// From inventory there may be no world reference at all - part
-						// of what this trace is here to reveal.
-						spdlog::info("SpellTomeTrace: ACTIVATE tome '{}' (0x{:08X}) | spell='{}' (0x{:08X}) | "
-									 "target={} activator={} | arg3={} count={} | original returned {}",
-							(bookName && *bookName) ? bookName : "<unnamed>",
-							a_this->GetFormID(),
-							(spellName && *spellName) ? spellName : "<none>",
-							spell ? spell->GetFormID() : 0,
-							a_targetRef ? "ref" : "none",
-							a_activatorRef ? "ref" : "none",
-							a_arg3,
-							a_targetCount,
-							result);
-
-						if (a_activatorRef) {
-							const char* actName = a_activatorRef->GetName();
-							spdlog::info("SpellTomeTrace:   activator 0x{:08X} '{}' isPlayer={}",
-								a_activatorRef->GetFormID(),
-								(actName && *actName) ? actName : "<unnamed>",
-								a_activatorRef->IsPlayerRef());
+						if (ShouldLog()) {
+							const char* name = a_this->GetName();
+							spdlog::debug("SpellTomes: kept tome '{}' (0x{:08X}) after read (vanilla wanted consume={}).",
+								(name && *name) ? name : "<unnamed>",
+								a_this->GetFormID(),
+								consumed);
 						}
+
+						// Default: do not eat the tome. The consumer calls
+						// ConsumeSpellTome later if it wants it gone.
+						return false;
 					}
 				} catch (...) {
-					// A trace must never take the game down.
+					// Never take the game down; fall back to vanilla behavior.
+					return consumed;
 				}
 
-				return result;
+				return consumed;
 			}
 
 			static inline REL::Relocation<decltype(thunk)> func;
-			static inline constexpr std::size_t            idx{ 0x37 };
 		};
+
+		// -------------------------------------------------------------------
+		// Natives
+		//
+		// Error convention (Stage B.3): failure by return value, never by throwing.
+		// -------------------------------------------------------------------
+
+		// Lodestone.RegisterForSpellTomeRead(Form) -> Bool
+		// Registers a form whose script implements OnSpellTomeRead(Book, ObjectReference).
+		bool RegisterForSpellTomeRead(RE::StaticFunctionTag*, RE::TESForm* a_receiver)
+		{
+			if (!a_receiver) {
+				spdlog::warn("SpellTomes: RegisterForSpellTomeRead got a None form - ignored.");
+				return false;
+			}
+			return g_readReg.Register(a_receiver);
+		}
+
+		// Lodestone.UnregisterForSpellTomeRead(Form) -> Bool
+		bool UnregisterForSpellTomeRead(RE::StaticFunctionTag*, RE::TESForm* a_receiver)
+		{
+			if (!a_receiver) {
+				return false;
+			}
+			return g_readReg.Unregister(a_receiver);
+		}
+
+		// Lodestone.ConsumeSpellTome(Book, ObjectReference) -> Bool
+		// Removes one copy of akBook from akActor - the explicit "eat the tome now"
+		// call. Returns false on a None argument.
+		bool ConsumeSpellTome(RE::StaticFunctionTag*, RE::TESObjectBOOK* a_book, RE::TESObjectREFR* a_actor)
+		{
+			if (!a_book || !a_actor) {
+				spdlog::warn("SpellTomes: ConsumeSpellTome got a None argument (book={}, actor={}) - ignored.",
+					a_book ? "ok" : "NONE",
+					a_actor ? "ok" : "NONE");
+				return false;
+			}
+
+			a_actor->RemoveItem(a_book, 1, RE::ITEM_REMOVE_REASON::kRemove, nullptr, nullptr);
+			return true;
+		}
+	}
+
+	bool RegisterFuncs(RE::BSScript::IVirtualMachine* a_vm)
+	{
+		if (!a_vm) {
+			spdlog::error("SpellTomes: null VM, cannot register natives.");
+			return false;
+		}
+
+		a_vm->RegisterFunction("RegisterForSpellTomeRead", "Lodestone", RegisterForSpellTomeRead);
+		a_vm->RegisterFunction("UnregisterForSpellTomeRead", "Lodestone", UnregisterForSpellTomeRead);
+		a_vm->RegisterFunction("ConsumeSpellTome", "Lodestone", ConsumeSpellTome);
+
+		spdlog::info("SpellTomes: natives registered (RegisterForSpellTomeRead, UnregisterForSpellTomeRead, ConsumeSpellTome).");
+		return true;
 	}
 
 	void Install()
 	{
 		try {
-			// [0] = the primary (TESBoundObject) branch of TESObjectBOOK's multiple
-			// inheritance; Activate (0x37) is a TESBoundObject override and lives
-			// there. The VTABLE constant carries the SE / AE / VR variants.
-			REL::Relocation<std::uintptr_t> vtbl{ RE::VTABLE_TESObjectBOOK[0] };
+			// TESObjectBOOK::Read. The ID is not in the shipped 3.5.3 headers; it is
+			// taken from the CommonLibSSE-NG source and is pending in-game
+			// confirmation (see SpellTomes.h).
+			REL::Relocation<std::uintptr_t> target{ REL::RelocationID(17439, 17842) };
 
-			ActivateHook::func = vtbl.write_vfunc(ActivateHook::idx, ActivateHook::thunk);
+			auto& trampoline = SKSE::GetTrampoline();
+			ReadHook::func = trampoline.write_branch<5>(target.address(), ReadHook::thunk);
 
-			spdlog::info("SpellTomeTrace: hook installed on TESObjectBOOK vtable (Activate @0x37). "
-						 "TRACE ONLY - logs spell-tome reads, changes nothing.");
+			spdlog::info("SpellTomes: hook installed on TESObjectBOOK::Read. "
+						 "Spell tomes are learned as vanilla but kept, not consumed.");
 		} catch (const std::exception& e) {
-			spdlog::error("SpellTomeTrace: failed to install: {} - trace unavailable.", e.what());
+			spdlog::error("SpellTomes: failed to install: {} - spell-tome behavior unchanged.", e.what());
 		} catch (...) {
-			spdlog::error("SpellTomeTrace: failed to install (unknown exception) - trace unavailable.");
+			spdlog::error("SpellTomes: failed to install (unknown exception) - spell-tome behavior unchanged.");
 		}
 	}
 }

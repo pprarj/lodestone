@@ -1,51 +1,74 @@
 // SpellTomes.h
 // Lodestone - Shared SKSE framework
 //
-// Module: SpellTomes - TRACE ONLY (Stage C.3 / L2, Part 1.5)
+// Module: SpellTomes (Core)
+// Owns the "keep the spell tome" capability (Stage C.3): reading a spell tome
+// still teaches the spell exactly as vanilla, but the book is NOT consumed. A
+// consumer is notified of the read and decides, on its own terms, whether and when
+// the book is finally consumed.
 //
-// This is the LOG-ONLY trace build that precedes Lodestone's spell-tome module -
-// the capability to intercept reading a spell tome BEFORE the vanilla "learn the
-// spell and eat the book" happens, so a consumer can run its own spell-learning
-// (gated learning, keep the tome, custom effects) through an event. It is NOT the
-// production module. It changes NOTHING: it calls the original first and only
-// logs, so the game behaves exactly as vanilla while the trace runs.
+// SCOPE - deliberately narrow (settled with the design owner): Lodestone does NOT
+// touch spell LEARNING. Whether the spell is learned instantly by the engine or by
+// a consumer's own system is none of this module's business. Lodestone's only job
+// is to stop the book from being eaten, and to expose a read event plus an explicit
+// consume call so a consumer stays in control.
 //
-// LAYER NOTE (open for review): the reference this replaces was tied to one
-// consumer, which is why the roadmap filed this module under Domain. But the
-// CAPABILITY is agnostic - any spell-learning mod can register for the read event,
-// and nothing here needs a consumer's name. So it is written as Core (agnostic
-// surface), consistent with the rest of the framework. If a genuine per-consumer
-// coupling appears later, it can move to Domain then. Placement is a one-line
-// change; flagged so it can be vetoed.
+// DEFAULT BEHAVIOR: with this module installed, reading a spell tome learns the
+// spell (vanilla, untouched) and keeps the book. This is an intentional change to
+// vanilla on install, not a passthrough - it is the whole point of the module.
 //
-// THE ENGINE FACTS (Part 1, from the installed CommonLibSSE-NG 3.5.3 headers):
-//   - A book is activated through TESObjectBOOK::Activate (vfunc 0x37,
-//     RE/T/TESObjectBOOK.h), which is in VTABLE_TESObjectBOOK[0] - addressable
-//     from the headers, no address-library ID needed (the CastTime pattern).
-//   - A spell tome is a book with TeachesSpell(); GetSpell() gives the SpellItem;
-//     the vanilla path learns it (Actor::AddSpell) and consumes the book.
-//   - TESObjectBOOK::Read(reader) also exists but has no ID in the headers.
+// PUBLIC API (declared in Lodestone.psc, "Lodestone" script):
 //
-// THE QUESTION THIS ANSWERS:
-//   Does TESObjectBOOK::Activate fire for a spell tome read from the INVENTORY, or
-//   only from a world reference? That decides the production hook: if Activate
-//   covers both paths, the production module hooks it (addressable, safe); if
-//   inventory reads bypass it, production needs Read (whose ID would be sourced
-//   like the book-open one in L1). The trace logs every spell-tome activation -
-//   book, spell, who activated it, from where - so opening a tome from inventory
-//   vs from the world, in TWO load orders, settles it.
+//   Bool  Function RegisterForSpellTomeRead(Form akReceiver) global native
+//   Bool  Function UnregisterForSpellTomeRead(Form akReceiver) global native
+//   Bool  Function ConsumeSpellTome(Book akBook, ObjectReference akActor) global native
 //
-// Phase L2 - Stage C.3 / Part 1.5 (TRACE)
+//   And the event a registered script implements:
+//     Event OnSpellTomeRead(Book akBook, ObjectReference akReader)
+//
+//   A consumer registers a form whose script implements OnSpellTomeRead; every
+//   spell-tome read then dispatches that event to it. When the consumer decides the
+//   book should be eaten (e.g. after its own study/learning finishes, or never),
+//   it calls ConsumeSpellTome. If nothing calls ConsumeSpellTome, the book stays.
+//   Registration is session-scoped (not serialized) - a consumer re-registers
+//   after each load, the same runtime model the other modules use.
+//
+// HOW IT WORKS (pending in-game validation):
+//   The read is TESObjectBOOK::Read, which teaches the spell and returns whether
+//   the book should be consumed. This module hooks it: it calls the original (so
+//   the spell is still learned), and for a spell tome returns FALSE so the caller
+//   does not remove the book, then dispatches OnSpellTomeRead. The Read address is
+//   not in the installed headers; it is taken from the CommonLibSSE-NG source
+//   (RELOCATION_ID(17439, 17842)), and the assumption that the caller honors the
+//   return value to decide consumption must be confirmed in game. See SpellTomes.cpp.
+//
+// This module has TWO seams, like CastTime and BookFramework: RegisterFuncs(vm)
+// plugs its natives into the dispatcher (Core/Papyrus.cpp), and Install() installs
+// the engine hook from plugin.cpp on kDataLoaded.
+//
+// Phase L2 - Stage C.3
 
 #pragma once
 
 namespace Lodestone::Core::SpellTomes
 {
-	// Installs the trace hook on the shared TESObjectBOOK vtable (Activate, 0x37).
-	// Must be called exactly once - NOT idempotent. A vtable swap needs no
-	// trampoline and no address-library ID.
+	// Registers this module's native functions with the Papyrus VM.
+	// Called by Lodestone::Core::Papyrus::Register - never called directly.
 	//
-	// Call site: plugin.cpp, on SKSE::MessagingInterface::kDataLoaded. Never throws;
-	// every failure path is logged and swallowed, leaving vanilla behavior intact.
+	// Registers: RegisterForSpellTomeRead, UnregisterForSpellTomeRead,
+	// ConsumeSpellTome on the "Lodestone" script.
+	//
+	// Returns false if any registration failed.
+	bool RegisterFuncs(RE::BSScript::IVirtualMachine* a_vm);
+
+	// Installs the engine hook on TESObjectBOOK::Read. Must be called exactly once -
+	// NOT idempotent.
+	//
+	// Call site: plugin.cpp, on SKSE::MessagingInterface::kDataLoaded. Requires the
+	// SKSE trampoline to be allocated first (SKSE::AllocTrampoline in
+	// SKSEPluginLoad), because this is a branch hook.
+	//
+	// Never throws. Every failure path is logged and swallowed, leaving vanilla
+	// spell-tome behavior intact.
 	void Install();
 }

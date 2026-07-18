@@ -74,10 +74,11 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse) {
         Lodestone::Version::kProjectName, Lodestone::Version::kString);
 
     // Reserve trampoline space for branch hooks installed later (BookFramework
-    // detours the book-open function on kDataLoaded). A vtable swap like CastTime's
-    // needs none of this; a branch hook does, and it must be reserved before the
-    // hook is written. 64 bytes covers the current single branch hook.
-    SKSE::AllocTrampoline(64);
+    // detours the book-open function; SpellTomes detours TESObjectBOOK::Read - both
+    // on kDataLoaded). A vtable swap like CastTime's needs none of this; a branch
+    // hook does, and it must be reserved before the hook is written. 128 bytes
+    // comfortably covers the current branch hooks.
+    SKSE::AllocTrampoline(128);
 
     // Native function registration. SKSE calls the dispatcher once the
     // Papyrus VM is ready - that happens later during load, not right now.
