@@ -2,7 +2,9 @@
 
 **A shared SKSE framework for the Matters mods.**
 
-Lodestone provides low-level native infrastructure to Skyrim mods that would otherwise each ship their own DLL: custom actor values, per-instance ExtraData, engine hooks, localized strings, and a version gate. It is a dependency, not a gameplay mod. Installed on its own it does nothing.
+Lodestone provides low-level native infrastructure to Skyrim mods that would otherwise each ship their own DLL: engine hooks a mod can drive from Papyrus at runtime, and a version gate. It is a dependency, not a gameplay mod.
+
+Installed on its own it does almost nothing - every module is passthrough until a consumer registers something with it. The one exception is spell tomes, which are kept rather than eaten from the moment the plugin is installed; see the table below.
 
 It is built on [CommonLibSSE-NG](https://github.com/CharmedBaryon/CommonLibSSE-NG), so a single DLL covers Skyrim SE, AE and VR.
 
@@ -14,12 +16,19 @@ It is built on [CommonLibSSE-NG](https://github.com/CharmedBaryon/CommonLibSSE-N
 
 Lodestone was extracted from the Intelligence Matters SKSE plugin, which is its first consumer. The API is small and will grow. Until the first Nexus release, treat everything here as unstable.
 
-Currently implemented:
+Currently implemented. Every module is Core - it never knows a consumer by name. The Domain layer described in CONVENTIONS exists but is currently empty.
 
-| Module | Layer | Papyrus surface |
+| Module | Since | Papyrus surface |
 | ------ | ----- | --------------- |
-| PluginInfo | Core | `Lodestone.GetVersion()`, `Lodestone.GetVersionString()` |
-| CastTime | Core | `Lodestone.RegisterCastTimeChannel()` + engine hook |
+| PluginInfo | 1.0.0 | `GetVersion()`, `GetVersionString()` |
+| CastTime | 1.1.0 | `RegisterCastTimeChannel()` |
+| BookFramework | 1.2.0 | `SetBookText()`, `AppendBookText()`, `ClearBookText()`, `GetBookText()` |
+| SpellTomes | 1.3.0 | `RegisterForSpellTomeRead()`, `UnregisterForSpellTomeRead()`, `ConsumeSpellTome()`, event `OnSpellTomeRead` |
+| MagicScaling | 1.4.0 | `RegisterMagicMagnitudeChannel()`, `RegisterMagicDurationChannel()`, `RegisterMagicCostChannel()` |
+
+All functions are global natives on the `Lodestone` script, so they are called as `Lodestone.GetVersion()`. Full signatures and per-function notes are in `Lodestone.psc`, which is the authoritative reference - a consumer copies that file into its own scripts.
+
+**Spell tomes are the one module that changes the game on its own.** With Lodestone installed, reading a spell tome teaches the spell exactly as vanilla but keeps the book. The capability is inverted compared to the others: the behavior is the default, and a consumer calls `ConsumeSpellTome()` when it wants the book eaten after all. Every other module does nothing at all until a consumer registers with it.
 
 ---
 

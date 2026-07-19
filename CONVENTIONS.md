@@ -47,6 +47,40 @@ Bump it when the native API or native behavior changes. Not when a consumer ship
 
 ---
 
+## Engine hooks
+
+### The target decides the mechanism. It is not a preference.
+
+| Target | Mechanism |
+| ------ | --------- |
+| Virtual function | vtable swap - `REL::Relocation<std::uintptr_t>::write_vfunc` |
+| Non-virtual function | inline hook - `safetyhook::create_inline` |
+
+**Never `Trampoline::write_branch`.** It does not detour a function body. It assumes the address it is given already holds a 5-byte rel32 branch, decodes that displacement, and returns the branch's original target:
+
+```cpp
+const auto disp   = (std::int32_t*)(a_src + N - 4);
+const auto func   = (a_src + N) + *disp;
+```
+
+Pointed at a function prologue it reads prologue bytes as a displacement and hands back an address in no loaded module, which the thunk then calls. The failure is silent until the hooked path first runs, and then it is an access violation with no useful stack. It is a tool for redirecting an existing call site; three hooks in this project were written against it as if it detoured functions, and none of them had ever run.
+
+Detouring a function body means relocating the displaced prologue, which needs a disassembler. That is why SafetyHook is a dependency.
+
+### The original runs first, and exactly once.
+
+Every thunk calls the original before doing anything of its own, on every path including failure. The value being adjusted is then whatever the engine finished computing, rather than something racing it - and if everything after the call fails, vanilla behavior is intact.
+
+### An address is not proven until a hook fires on it.
+
+An address taken from anywhere other than the shipped headers is a hypothesis. An inline hook on a wrong address installs and runs quietly on the wrong function, so "it compiles and the game loads" proves nothing. Prove it with a log-only pass that shows the hook firing on the right event with coherent arguments, then switch the behavior on.
+
+### Measure with other plugins disabled.
+
+If another plugin hooks the same function, the "original" a thunk calls may be that plugin's thunk. Hook chaining leaves no trace in a log and the values look entirely plausible. Anything measured at a shared seam is measured with the other plugins on that seam turned off, or it is measuring them.
+
+---
+
 ## Comments
 
 ### Document why, with evidence.
