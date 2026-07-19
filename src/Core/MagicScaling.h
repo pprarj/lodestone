@@ -18,7 +18,7 @@
 // A consumer that registers only the cost channel gets only cost scaled.
 //
 // WHERE IT APPLIES (all three located by measurement - see the Part 1.5 trace in
-// git history, commit 3f04519, and the notes in the .cpp):
+// git history, and the notes in the .cpp):
 //
 //   magnitude  ActiveEffect::AdjustForPerks   vfunc 0x00, vtable swap
 //   duration   ActiveEffect::AdjustForPerks   same hook

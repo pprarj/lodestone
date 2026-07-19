@@ -4,7 +4,7 @@
 // Production implementation of the magic scaling capability. See MagicScaling.h
 // for the contract and the design decisions.
 //
-// This SUPERSEDES the Part 1.5 trace (commit 3f04519), which hooked eight effect
+// This SUPERSEDES the Part 1.5 trace, which hooked eight effect
 // vtables plus nine functions on the caster and wrote nothing. Its job was to
 // find where the engine applies each quantity, and every rule below comes from a
 // specific measurement it produced rather than from reading the headers. What
