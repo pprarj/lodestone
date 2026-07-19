@@ -4,6 +4,13 @@
     "description": "Lodestone - Shared SKSE framework for Skyrim SE mods",
     "builtin-baseline": "fc3f61366102c1f0d4547c06d03c523bb18c13a7",
     "dependencies": [
-        "commonlibsse-ng"
+        "commonlibsse-ng",
+        "safetyhook"
+    ],
+    "overrides": [
+        {
+            "name": "safetyhook",
+            "version": "0.7.0"
+        }
     ]
 }

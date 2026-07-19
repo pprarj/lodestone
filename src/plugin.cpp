@@ -36,6 +36,7 @@
 #include "Core/BookFramework.h"
 #include "Core/CastTime.h"
 #include "Core/Log.h"
+#include "Core/MagicScaling.h"
 #include "Core/Papyrus.h"
 #include "Core/SpellTomes.h"
 #include "Version.h"
@@ -55,6 +56,7 @@ namespace
 			Lodestone::Core::CastTime::Install();
 			Lodestone::Core::BookFramework::Install();
 			Lodestone::Core::SpellTomes::Install();
+			Lodestone::Core::MagicScaling::Install();
 		}
 	}
 }
@@ -77,7 +79,8 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse) {
     // detours the book-open function; SpellTomes detours TESObjectBOOK::Read - both
     // on kDataLoaded). A vtable swap like CastTime's needs none of this; a branch
     // hook does, and it must be reserved before the hook is written. 128 bytes
-    // comfortably covers the current branch hooks.
+    // comfortably covers the current branch hooks. MagicScaling needs none of it:
+    // AdjustForPerks is virtual, so it is a vtable swap like CastTime's.
     SKSE::AllocTrampoline(128);
 
     // Native function registration. SKSE calls the dispatcher once the

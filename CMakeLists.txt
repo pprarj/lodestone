@@ -37,6 +37,35 @@ configure_file(
 # Resolved via the vcpkg port (colorglass registry, see vcpkg-configuration.json).
 find_package(CommonLibSSE CONFIG REQUIRED)
 
+# SafetyHook - inline detours for NON-VIRTUAL engine functions.
+#
+# WHY A SECOND HOOKING MECHANISM EXISTS. CommonLibSSE's Trampoline::write_branch
+# does not detour a function body: it assumes the address already holds a 5-byte
+# rel32 branch, decodes that displacement, and returns the branch's original
+# target. It is a tool for redirecting an existing CALL SITE. Pointed at a
+# prologue it returns an address in no loaded module, and the first call through
+# it crashes the game - which is exactly what happened here before this was
+# understood.
+#
+# Detouring a function body requires relocating the displaced prologue, which
+# requires knowing instruction boundaries and rewriting rip-relative operands.
+# That is disassembler work; SafetyHook does it (via Zydis) and additionally
+# suspends other threads while patching, which matters in a game with a render
+# thread and a script VM running concurrently.
+#
+# THE RULE, so this does not drift:
+#   virtual function      -> vtable swap (REL::Relocation::write_vfunc)
+#   non-virtual function  -> SafetyHook inline hook
+#   Trampoline::write_branch -> NOT USED. Only valid on a call site, and every
+#                               use of it in this project was on a function body.
+#
+# PINNED BY OVERRIDE in vcpkg.json, not by the baseline: safetyhook is absent
+# from the pinned builtin-baseline, and moving that baseline would re-resolve
+# every other dependency of a project that builds clean. The override keeps the
+# rest of the dependency set frozen - which also means bumping the baseline will
+# NOT bump safetyhook. That is deliberate; change it in vcpkg.json explicitly.
+find_package(safetyhook CONFIG REQUIRED)
+
 # add_commonlibsse_plugin creates the DLL target, wires up CommonLibSSE linkage,
 # and auto-generates the SKSE version boilerplate (SKSEPlugin_Version).
 # Output file will be Lodestone.dll.
@@ -51,9 +80,12 @@ add_commonlibsse_plugin(
         src/Core/CastTime.cpp
         src/Core/BookFramework.cpp
         src/Core/SpellTomes.cpp
+        src/Core/MagicScaling.cpp
 )
 
 target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_23)
+
+target_link_libraries(${PROJECT_NAME} PRIVATE safetyhook::safetyhook)
 
 # Where the generated Version.h is found by #include "Version.h".
 target_include_directories(${PROJECT_NAME} PRIVATE
