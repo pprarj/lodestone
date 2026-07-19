@@ -30,6 +30,16 @@
 //   earlier, but the vtable must exist, and kDataLoaded is the established, safe
 //   seam. The module no longer caches any globals here - they arrive at runtime
 //   through the native.
+//
+// Phase L3 update: four modules now install hooks here, by two mechanisms:
+//     CastTime, MagicScaling  -> vtable swap (virtual targets)
+//     BookFramework, SpellTomes -> SafetyHook inline hook (non-virtual targets)
+//
+//   The split is not a preference, it is what the target allows. CommonLibSSE's
+//   Trampoline::write_branch is used by none of them: it redirects an existing
+//   rel32 call site and cannot detour a function body, which is a distinction
+//   that cost a crash and two silently dead modules to learn. See the rule
+//   recorded in CMakeLists.
 // ---------------------------------------------------------------------------
 
 // RE/Skyrim.h and SKSE/SKSE.h come from PCH.h (force-included by CMake).
@@ -75,13 +85,24 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse) {
     spdlog::info("{} v{} loaded successfully.",
         Lodestone::Version::kProjectName, Lodestone::Version::kString);
 
-    // Reserve trampoline space for branch hooks installed later (BookFramework
-    // detours the book-open function; SpellTomes detours TESObjectBOOK::Read - both
-    // on kDataLoaded). A vtable swap like CastTime's needs none of this; a branch
-    // hook does, and it must be reserved before the hook is written. 128 bytes
-    // comfortably covers the current branch hooks. MagicScaling needs none of it:
-    // AdjustForPerks is virtual, so it is a vtable swap like CastTime's.
-    SKSE::AllocTrampoline(128);
+    // NO TRAMPOLINE IS RESERVED HERE ANY MORE.
+    //
+    // There used to be an AllocTrampoline call, for branch hooks that no module
+    // installs today. Every hook in this plugin now uses one of two mechanisms,
+    // and neither touches CommonLibSSE's trampoline:
+    //
+    //   virtual function      -> vtable swap  (CastTime, MagicScaling)
+    //   non-virtual function  -> SafetyHook   (BookFramework, SpellTomes)
+    //
+    // SafetyHook allocates and manages its own trampoline per hook. The reserved
+    // block was left over from the branch hooks that were removed once it became
+    // clear write_branch only redirects an existing call site and cannot detour a
+    // function body. Reserving it changed nothing except to describe an
+    // architecture that no longer exists - which is worse than useless in a file
+    // whose whole job is to say how the plugin is wired.
+    //
+    // Anything added later that does need it must call AllocTrampoline before the
+    // hook is written; running out is a silent failure to detour.
 
     // Native function registration. SKSE calls the dispatcher once the
     // Papyrus VM is ready - that happens later during load, not right now.
