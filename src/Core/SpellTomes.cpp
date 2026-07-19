@@ -19,6 +19,8 @@
 
 #include "SpellTomes.h"
 
+#include <safetyhook.hpp>
+
 #include "SKSE/RegistrationSet.h"
 
 namespace Lodestone::Core::SpellTomes
@@ -31,11 +33,18 @@ namespace Lodestone::Core::SpellTomes
 		// set has its own lock, so the natives and the hook can touch it safely.
 		SKSE::RegistrationSet<RE::TESObjectBOOK*, RE::TESObjectREFR*> g_readReg{ "OnSpellTomeRead" };
 
+		// debug: per-event lines are absent from a Release build, since Log.cpp
+		// caps the level at info when NDEBUG is defined. The guard is not
+		// redundant with that - spdlog skips formatting below the active level,
+		// but the arguments are still evaluated at the call site.
 		bool ShouldLog()
 		{
 			auto* logger = spdlog::default_logger_raw();
 			return logger && logger->should_log(spdlog::level::debug);
 		}
+
+		// The inline hook object owns the original; call it through this.
+		SafetyHookInline g_readHook{};
 
 		// -------------------------------------------------------------------
 		// Hook: TESObjectBOOK::Read - the game function at RELOCATION_ID(17439, 17842)
@@ -47,15 +56,30 @@ namespace Lodestone::Core::SpellTomes
 		// registered consumer. Non-tome books are passed through with the original's
 		// own return value.
 		//
-		// PENDING VALIDATION: this assumes the caller uses Read's return value to
-		// decide whether to remove the book. If instead Read removes the book
-		// itself, suppression would need a different seam - to be confirmed in game.
+		// VALIDATED IN GAME. Both the address and the meaning of the return value
+		// were unproven for a long time - the module could not even install, so
+		// nothing about it had ever been observed. A log-only pass answered both:
+		//
+		//   READ book='Spell Tome: Firebolt' teachesSpell=true  | original returned true
+		//   READ book='2920, First Seed, v3' teachesSpell=false | original returned false
+		//
+		// The tome was consumed and the ordinary book was not, so the return value
+		// means "consume this book" and returning false is what keeps a tome. That
+		// is the assumption this module was built on, now measured rather than
+		// hoped for.
+		//
+		// ONE TRAP WORTH KEEPING. The same trace run with another spell-tome plugin
+		// still active reported the tome returning FALSE. That plugin hooks this
+		// same function, so the "original" being called was its thunk rather than
+		// the engine's - hook chaining is invisible in a log, and the value looked
+		// perfectly plausible. Anything measured here has to be measured with other
+		// plugins touching this function disabled, or it is measuring them.
 		// -------------------------------------------------------------------
 		struct ReadHook
 		{
 			static bool thunk(RE::TESObjectBOOK* a_this, RE::TESObjectREFR* a_reader)
 			{
-				const bool consumed = func(a_this, a_reader);
+				const bool consumed = g_readHook.call<bool, RE::TESObjectBOOK*, RE::TESObjectREFR*>(a_this, a_reader);
 
 				try {
 					if (a_this && a_this->TeachesSpell()) {
@@ -83,8 +107,6 @@ namespace Lodestone::Core::SpellTomes
 
 				return consumed;
 			}
-
-			static inline REL::Relocation<decltype(thunk)> func;
 		};
 
 		// -------------------------------------------------------------------
@@ -171,30 +193,30 @@ namespace Lodestone::Core::SpellTomes
 			// confirmation (see SpellTomes.h).
 			REL::Relocation<std::uintptr_t> target{ REL::RelocationID(17439, 17842) };
 
-			// GUARD - same defect, same reasoning as BookFramework::Install; the
-			// full explanation lives there.
+			// The guard that used to stand here is gone, and so is the branch hook
+			// it protected. It refused to install because the first byte at this
+			// address is 0x48 - a REX prefix, i.e. an ordinary function prologue,
+			// which confirmed in game that this is a function body and not a call
+			// site. Trampoline::write_branch cannot detour a body; that is what it
+			// was protecting against, and it did its job.
 			//
-			// Short version: write_branch redirects an existing rel32 branch, it
-			// does not detour a function body. Pointed at a prologue it returns a
-			// garbage "original" that the thunk then calls. TESObjectBOOK::Read is
-			// non-virtual, so there is no vtable slot to swap instead - the honest
-			// fix needs a real call site, which needs disassembly evidence this
-			// module does not have yet.
+			// TESObjectBOOK::Read is non-virtual, so there is no vtable slot to
+			// swap. An inline hook is the correct instrument: SafetyHook relocates
+			// the displaced prologue and suspends other threads while patching.
 			//
-			// Until then: refuse, log, and leave spell tomes behaving exactly as
-			// vanilla. A tome that gets eaten is a design regression; a tome that
-			// takes the game down is not something to ship on a guess.
-			const auto opcode = *reinterpret_cast<const std::uint8_t*>(target.address());
-			if (opcode != 0xE8 && opcode != 0xE9) {
-				spdlog::error("SpellTomes: NOT installing the tome-read hook - the target is not a rel32 branch "
-							  "(first byte 0x{:02X}, expected 0xE8 call or 0xE9 jmp). Spell tomes keep vanilla "
-							  "behavior (learned and consumed) until a real call site is identified.",
-					opcode);
+			// The address itself is still UNPROVEN. It did not come from the
+			// shipped headers - it came from an outside source - and no one has
+			// ever seen this hook run. An inline hook on the wrong address succeeds
+			// silently, which is why the thunk above only logs for now.
+			g_readHook = safetyhook::create_inline(
+				reinterpret_cast<void*>(target.address()),
+				reinterpret_cast<void*>(&ReadHook::thunk));
+
+			if (!g_readHook) {
+				spdlog::error("SpellTomes: SafetyHook refused to hook the tome-read target - "
+							  "spell tomes keep vanilla behavior.");
 				return;
 			}
-
-			auto& trampoline = SKSE::GetTrampoline();
-			ReadHook::func = trampoline.write_branch<5>(target.address(), ReadHook::thunk);
 
 			spdlog::info("SpellTomes: hook installed on TESObjectBOOK::Read. "
 						 "Spell tomes are learned as vanilla but kept, not consumed.");
