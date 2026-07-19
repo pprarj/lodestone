@@ -205,6 +205,36 @@ namespace Lodestone::Core::BookFramework
 			// is pending in-game confirmation (see BookFramework.h).
 			REL::Relocation<std::uintptr_t> target{ REL::RelocationID(50122, 51053) };
 
+			// GUARD - added after the L3 trace crashed the game doing exactly what
+			// the line below does.
+			//
+			// Trampoline::write_branch does NOT detour a function body. It assumes
+			// the address already holds a 5-byte rel32 branch, decodes that
+			// displacement, and returns the branch's original target:
+			//
+			//     const auto disp   = (std::int32_t*)(a_src + N - 4);
+			//     const auto func   = (a_src + N) + *disp;
+			//
+			// Given a function PROLOGUE it reads four prologue bytes as a
+			// displacement and hands back an address in no loaded module - which
+			// the thunk then calls. That is an instant access violation, and it is
+			// silent until the hooked path first runs.
+			//
+			// This address is a function ID, so it almost certainly points at a
+			// prologue rather than a call site. Rather than delete a hook that has
+			// never been proven either way, the check refuses to write unless the
+			// target really is a rel32 branch, and says so in the log. Book text
+			// then degrades to vanilla instead of crashing the game.
+			const auto opcode = *reinterpret_cast<const std::uint8_t*>(target.address());
+			if (opcode != 0xE8 && opcode != 0xE9) {
+				spdlog::error("BookFramework: NOT installing the book-open hook - the target is not a rel32 branch "
+							  "(first byte 0x{:02X}, expected 0xE8 call or 0xE9 jmp). write_branch only redirects an "
+							  "existing call site; pointed at a function body it returns a garbage original and "
+							  "crashes on first use. Book text stays vanilla until a real call site is identified.",
+					opcode);
+				return;
+			}
+
 			auto& trampoline = SKSE::GetTrampoline();
 			OpenBookMenuHook::func =
 				trampoline.write_branch<5>(target.address(), OpenBookMenuHook::thunk);

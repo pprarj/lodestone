@@ -145,6 +145,24 @@ namespace Lodestone::Core::SpellTomes
 		return true;
 	}
 
+	// -----------------------------------------------------------------------
+	// THE ONE DELIBERATE EXCEPTION TO "PASSIVE UNTIL ASKED"
+	//
+	// Every other module in this plugin is inert until a consumer registers
+	// something: install it with nothing else and the game behaves exactly as it
+	// did before. This module does not follow that rule, and the difference is
+	// intentional rather than an oversight.
+	//
+	// Installing it keeps spell tomes from being consumed, with no consumer
+	// involved. The capability is inverted compared to the rest: the default IS
+	// the behavior, and a consumer calls ConsumeSpellTome when it wants the book
+	// eaten after all. Making it opt-in would mean shipping a module that does
+	// nothing at all for anyone who has not written script against it, for a
+	// behavior that needs no configuration to be useful.
+	//
+	// Recorded here because it is the sort of thing that reads like a bug to
+	// whoever finds it next - including the author, months from now.
+	// -----------------------------------------------------------------------
 	void Install()
 	{
 		try {
@@ -152,6 +170,28 @@ namespace Lodestone::Core::SpellTomes
 			// taken from the CommonLibSSE-NG source and is pending in-game
 			// confirmation (see SpellTomes.h).
 			REL::Relocation<std::uintptr_t> target{ REL::RelocationID(17439, 17842) };
+
+			// GUARD - same defect, same reasoning as BookFramework::Install; the
+			// full explanation lives there.
+			//
+			// Short version: write_branch redirects an existing rel32 branch, it
+			// does not detour a function body. Pointed at a prologue it returns a
+			// garbage "original" that the thunk then calls. TESObjectBOOK::Read is
+			// non-virtual, so there is no vtable slot to swap instead - the honest
+			// fix needs a real call site, which needs disassembly evidence this
+			// module does not have yet.
+			//
+			// Until then: refuse, log, and leave spell tomes behaving exactly as
+			// vanilla. A tome that gets eaten is a design regression; a tome that
+			// takes the game down is not something to ship on a guess.
+			const auto opcode = *reinterpret_cast<const std::uint8_t*>(target.address());
+			if (opcode != 0xE8 && opcode != 0xE9) {
+				spdlog::error("SpellTomes: NOT installing the tome-read hook - the target is not a rel32 branch "
+							  "(first byte 0x{:02X}, expected 0xE8 call or 0xE9 jmp). Spell tomes keep vanilla "
+							  "behavior (learned and consumed) until a real call site is identified.",
+					opcode);
+				return;
+			}
 
 			auto& trampoline = SKSE::GetTrampoline();
 			ReadHook::func = trampoline.write_branch<5>(target.address(), ReadHook::thunk);
