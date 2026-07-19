@@ -18,6 +18,8 @@
 
 #include "BookFramework.h"
 
+#include <safetyhook.hpp>
+
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -58,11 +60,16 @@ namespace Lodestone::Core::BookFramework
 			return true;
 		}
 
+		// debug: per-open lines are absent from a Release build, since Log.cpp
+		// caps the level at info when NDEBUG is defined.
 		bool ShouldLogOpens()
 		{
 			auto* logger = spdlog::default_logger_raw();
 			return logger && logger->should_log(spdlog::level::debug);
 		}
+
+		// The inline hook object owns the original; call it through this.
+		SafetyHookInline g_openBookHook{};
 
 		// -------------------------------------------------------------------
 		// Hook: the game's book-open function (behind BookMenu::OpenBookMenu)
@@ -76,6 +83,25 @@ namespace Lodestone::Core::BookFramework
 		// The signature mirrors BookMenu::OpenBookMenu (RE/B/BookMenu.h). BSString
 		// caps at 64 KB (its size field is 16-bit); that is the engine's own limit
 		// on book text, not one this module adds.
+		//
+		// VALIDATED IN GAME. Two things were unproven here, not one: the address
+		// did not come from the shipped headers, and with eight arguments the
+		// signature was itself a claim. Both were settled by a log-only pass:
+		//
+		//   OPEN '2920, First Seed, v3'   (0x0001ACE5) ref=0x00000000 10189 chars
+		//                                 scale=0.44 defaultPos=false
+		//   OPEN 'The Seed'               (0x0001ACFA) ref=0x00000000  6961 chars
+		//                                 scale=0.59 defaultPos=false
+		//   OPEN 'The Cabin in the Woods' (0x000EF638) ref=0x0300910A  3682 chars
+		//                                 scale=1.00 defaultPos=true
+		//
+		// The description argument held real book markup ("[pagebreak]<p
+		// align=\"center\">...") for every one, which is the first argument
+		// confirming itself. The strongest evidence is the third: `ref` came back
+		// null for both books opened from the inventory and populated for the one
+		// opened from a world reference - so an argument in the middle of the list
+		// behaves the way the header says it should. That is the whole signature
+		// being confirmed, not just its first slot.
 		// -------------------------------------------------------------------
 		struct OpenBookMenuHook
 		{
@@ -107,10 +133,10 @@ namespace Lodestone::Core::BookFramework
 					desc = &a_description;
 				}
 
-				func(*desc, a_extraList, a_ref, a_book, a_pos, a_rot, a_scale, a_useDefaultPos);
+				g_openBookHook.call<void, const RE::BSString&, const RE::ExtraDataList*, RE::TESObjectREFR*,
+					RE::TESObjectBOOK*, const RE::NiPoint3&, const RE::NiMatrix3&, float, bool>(
+					*desc, a_extraList, a_ref, a_book, a_pos, a_rot, a_scale, a_useDefaultPos);
 			}
-
-			static inline REL::Relocation<decltype(thunk)> func;
 		};
 
 		// -------------------------------------------------------------------
@@ -205,39 +231,28 @@ namespace Lodestone::Core::BookFramework
 			// is pending in-game confirmation (see BookFramework.h).
 			REL::Relocation<std::uintptr_t> target{ REL::RelocationID(50122, 51053) };
 
-			// GUARD - added after the L3 trace crashed the game doing exactly what
-			// the line below does.
+			// The guard that used to stand here is gone, along with the branch hook
+			// it protected. It refused to install because the first byte here is
+			// 0x40 - a REX prefix, an ordinary function prologue - which is what
+			// proved in game that this address is a function body and not a call
+			// site. Trampoline::write_branch cannot detour a body.
 			//
-			// Trampoline::write_branch does NOT detour a function body. It assumes
-			// the address already holds a 5-byte rel32 branch, decodes that
-			// displacement, and returns the branch's original target:
+			// BookMenu::OpenBookMenu is a static function, so there is no vtable
+			// slot to swap either. An inline hook is the right instrument:
+			// SafetyHook relocates the displaced prologue and suspends other
+			// threads while patching.
 			//
-			//     const auto disp   = (std::int32_t*)(a_src + N - 4);
-			//     const auto func   = (a_src + N) + *disp;
-			//
-			// Given a function PROLOGUE it reads four prologue bytes as a
-			// displacement and hands back an address in no loaded module - which
-			// the thunk then calls. That is an instant access violation, and it is
-			// silent until the hooked path first runs.
-			//
-			// This address is a function ID, so it almost certainly points at a
-			// prologue rather than a call site. Rather than delete a hook that has
-			// never been proven either way, the check refuses to write unless the
-			// target really is a rel32 branch, and says so in the log. Book text
-			// then degrades to vanilla instead of crashing the game.
-			const auto opcode = *reinterpret_cast<const std::uint8_t*>(target.address());
-			if (opcode != 0xE8 && opcode != 0xE9) {
-				spdlog::error("BookFramework: NOT installing the book-open hook - the target is not a rel32 branch "
-							  "(first byte 0x{:02X}, expected 0xE8 call or 0xE9 jmp). write_branch only redirects an "
-							  "existing call site; pointed at a function body it returns a garbage original and "
-							  "crashes on first use. Book text stays vanilla until a real call site is identified.",
-					opcode);
+			// The address is still UNPROVEN - it came from an outside source, not
+			// from the shipped headers - which is why the thunk only logs for now.
+			g_openBookHook = safetyhook::create_inline(
+				reinterpret_cast<void*>(target.address()),
+				reinterpret_cast<void*>(&OpenBookMenuHook::thunk));
+
+			if (!g_openBookHook) {
+				spdlog::error("BookFramework: SafetyHook refused to hook the book-open target - "
+							  "book text stays vanilla.");
 				return;
 			}
-
-			auto& trampoline = SKSE::GetTrampoline();
-			OpenBookMenuHook::func =
-				trampoline.write_branch<5>(target.address(), OpenBookMenuHook::thunk);
 
 			spdlog::info("BookFramework: hook installed on the book-open function. "
 						 "No text stored yet - passthrough until a consumer calls Lodestone.SetBookText.");
