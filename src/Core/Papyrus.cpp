@@ -9,6 +9,7 @@
 
 #include "BookFramework.h"
 #include "CastTime.h"
+#include "MagicScaling.h"
 #include "PluginInfo.h"
 #include "SpellTomes.h"
 
@@ -30,6 +31,7 @@ namespace Lodestone::Core::Papyrus
 		ok &= CastTime::RegisterFuncs(a_vm);       // C.1/L0 - cast time
 		ok &= BookFramework::RegisterFuncs(a_vm);  // C.2/L1 - book text
 		ok &= SpellTomes::RegisterFuncs(a_vm);     // C.3/L2 - spell tomes
+		ok &= MagicScaling::RegisterFuncs(a_vm);   // L3 - magic scaling
 
 		if (ok) {
 			spdlog::info("Papyrus: all modules registered.");

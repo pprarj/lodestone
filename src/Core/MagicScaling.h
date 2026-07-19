@@ -1,59 +1,107 @@
 // MagicScaling.h
 // Lodestone - Shared SKSE framework
 //
-// Phase L3, Part 1.5 - TRACE ONLY. This build observes and logs; it changes
-// nothing in game and adds no Papyrus API.
+// Runtime scaling of a spell's magnitude, duration and magicka cost.
 //
-// GOAL OF THE MODULE (Part 2, not this build): scale a spell's magnitude,
-// duration and magicka cost from values a consumer drives at runtime, in the
-// same shape as the cast time module - the consumer registers its own globals,
-// the plugin applies them at the engine's calculation point. No custom actor
-// values are involved: the capability is the RESULT (scaled magic), not the
-// mechanism a consumer used to reach it before.
+// THE CAPABILITY. A consumer owns three pairs of GlobalVariable records and
+// drives them from its own Papyrus state - typically from some attribute it
+// tracks. It registers each pair through the natives below, and from then on
+// this module applies that pair to the matching quantity at the point where the
+// engine has finished computing it. Nothing here decides balance: the DLL
+// applies numbers the consumer supplies, which is the same division of labour
+// the cast time module follows.
 //
-// WHAT THIS TRACE HAS TO ANSWER (Part 1 left these open):
+// PASSIVE UNTIL ASKED. Every channel is independent and every one is
+// passthrough until someone registers it. Install this plugin with no consumer
+// present and magnitude, duration and cost are exactly what they would have
+// been - the hooks are installed, but they do nothing beyond a pointer compare.
+// A consumer that registers only the cost channel gets only cost scaled.
 //
-//   Q1. Does ActiveEffect::AdjustForPerks carry the post-perk magnitude and
-//       duration? The header shows it takes the caster and the target, and the
-//       ActiveEffect carries duration@74 and magnitude@78. If magnitude changes
-//       across the original call, that is the engine applying its perk entry
-//       points, and it is the right seam to scale afterwards - exactly how the
-//       cast time module scales castingTimer after the original wrote it.
+// WHERE IT APPLIES (all three located by measurement - see the Part 1.5 trace in
+// git history, commit 3f04519, and the notes in the .cpp):
 //
-//   Q2. Does ONE branch hook cover every effect type? AdjustForPerks is vfunc
-//       0x00 of ActiveEffect, and there are around fifty derived vtables - far
-//       too many to swap one by one. But ValueModifierEffect (checked in the
-//       3.5.3 headers) does NOT override it, so the derived vtables should all
-//       point their slot 0x00 at the SAME base implementation. If that holds, a
-//       single branch hook on that one body covers all of them. The census in
-//       Install() reads those slots and prints the answer instead of assuming
-//       it.
+//   magnitude  ActiveEffect::AdjustForPerks   vfunc 0x00, vtable swap
+//   duration   ActiveEffect::AdjustForPerks   same hook
+//   cost       MagicItem::CalculateCost       inline hook (non-virtual)
 //
-//   Q3. Is SpellItem::AdjustCost the cost seam? The header gives an exact
-//       signature - void(float& cost, Actor*) at vfunc 0x63, overridden only by
-//       SpellItem in the whole tree. Cost by reference plus the actor is the
-//       same shape the cast time hook has. The trace confirms it fires, for the
-//       player, with a plausible value, and whether the original changes the
-//       cost itself.
+// The engine has already applied its own perks by the time each hook's original
+// returns, so this scales the finished value rather than competing with the
+// engine over it.
 //
-// ADDRESSES: nothing here is a hardcoded RELOCATION_ID taken from an outside
-// source. The cost hook is a vtable swap addressable from the shipped headers.
-// The AdjustForPerks body address is READ OUT of VTABLE_ActiveEffect at runtime,
-// so it is derived from a header constant rather than guessed - this is
-// deliberately unlike the L1 and L2 addresses, which are still pending in-game
-// confirmation.
+// SCOPE - ORDINARY SPELLS ONLY (v1 decision, worth a review). AdjustForPerks
+// fires for every active effect on the actor, which during the trace included
+// armour enchantments at magnitude 25 and a quest ability at 300. A consumer
+// asking to scale "spell magnitude" does not mean those. So the magnitude and
+// duration channels apply only when the effect's source is SpellType::kSpell -
+// not abilities, not enchantments, not powers. Narrow is the recoverable
+// direction: widening later is additive, whereas shipping wide would silently
+// rescale every enchantment in the load order and there would be no way to take
+// that back from saves already played.
 //
-// RISK: none intended. Every thunk calls the original FIRST and then only reads
-// and logs. Nothing is written back. A trace that changed a value would be
-// measuring itself.
+// FORMULA, per channel: value = (value * multiplier) + offset. A channel whose
+// multiplier is 1 and offset 0 is a no-op, so a consumer can neutralise one
+// channel without unregistering it. Negative results are clamped to zero.
 //
-// Phase L3 (Part 1.5)
+// ONLY WHAT ALREADY EXISTS IS SCALED. An effect with no magnitude keeps none -
+// the offset is not applied to a zero, because that would invent magnitude on
+// effects that never had any (every script effect and controller ability in the
+// load order). Same for duration. This mirrors the cast time module, which
+// refuses to invent charge time on a spell whose record has none.
+//
+// PLAYER ONLY, like the cast time module - by decision, not by limitation. Both
+// hooks receive the casting actor, the formula is evaluated per call rather than
+// cached, and Channel is a plain struct a second instance can be made of. So the
+// player test is one branch in each thunk, and nothing here has to be rebuilt to
+// serve NPCs.
+//
+// RESERVED SEAM - NPC SCALING, and the trap in it. Relaxing the player test is
+// NOT how NPC support gets built. A channel is a pair of GlobalVariable records,
+// and a global holds ONE value: that works for the player because there is one
+// player. Dropping the test would apply the player's own multiplier to every NPC
+// in the cell, which is worse than not supporting them at all.
+//
+// NPC scaling needs a per-actor source instead, and there are at least three
+// shapes it could take:
+//   - one global shared by all NPCs (trivial, but every mage scales alike,
+//     regardless of skill or level)
+//   - an actor value the consumer writes per NPC and this module reads in the
+//     hook (per actor, and a cheap read on a hot path)
+//   - a Papyrus callback per cast (most flexible, and the one to avoid - calling
+//     into the VM from a hook this frequent is expensive and fragile)
+//
+// Which one is right depends on a design decision that has not been made: what
+// an NPC's scaling should derive from. That is why no NPC API is published here
+// yet. The Papyrus API only ever grows - a published signature can never be
+// changed - so guessing the shape now would be carried forever, while the
+// internal cost of adding it later does not grow with time. Deferring is the
+// cheap direction on both axes.
+//
+// The cast time module carries a similar note; its wording assumes the
+// derivation is the actor's school skill, which is one of the options above
+// rather than a settled decision.
+//
+// SINGLE CHANNEL PER QUANTITY, first-registrant-wins, matching the cast time
+// module's v1 policy. Re-registering the same pair is an idempotent refresh (a
+// consumer may re-register on every load); a different second registrant is
+// warned and rejected. Arbitration between several scaling mods is a future
+// improvement and is not a blocker.
+//
+// PERSISTENCE. Registration is session-scoped and not serialised. A consumer
+// re-registers after each load, exactly as it does for the other modules.
+//
+// Version gate for consumers: Lodestone.GetVersion() >= 1004000 (1.4.0).
+//
+// Phase L3 (Part 2)
 
 #pragma once
 
 namespace Lodestone::Core::MagicScaling
 {
-	// Runs the vtable census and installs the log-only hooks. Called from
-	// plugin.cpp on kDataLoaded, like the other engine hooks. Never throws.
+	// Installs the engine hooks. Called from plugin.cpp on kDataLoaded. Never
+	// throws; on failure the module stays passthrough and says so in the log.
 	void Install();
+
+	// Registers this module's natives on the "Lodestone" script. Plugged into
+	// Core/Papyrus.cpp like every other module with a Papyrus surface.
+	bool RegisterFuncs(RE::BSScript::IVirtualMachine* a_vm);
 }

@@ -117,3 +117,33 @@ Bool Function ConsumeSpellTome(Book akBook, ObjectReference akActor) global nati
 ;   Event OnSpellTomeRead(Book akBook, ObjectReference akReader)
 ;       ; your logic here (start study, consume the tome via ConsumeSpellTome, ...)
 ;   EndEvent
+
+
+; --- Magic scaling (L3) ----------------------------------------------------
+; Scales a spell's magnitude, duration and magicka cost by values you drive from
+; your own script. Three independent channels; each is passthrough until you
+; register it, so registering only one scales only that one. Formula per
+; channel: value = (value * multiplier) + offset. A multiplier of 1.0 with an
+; offset of 0.0 is a no-op, so you can neutralise a channel without
+; unregistering it.
+;
+; Scope: ordinary castable spells only - not abilities, enchantments or powers.
+; Player only. Only values that already exist are scaled: an effect with no
+; magnitude keeps none, and a spell that costs nothing keeps costing nothing.
+;
+; Registration is session-scoped (not saved) - re-register after each load.
+; One channel per quantity: the first registrant wins, re-registering the same
+; pair is a harmless refresh, and a different second registrant is rejected.
+; Requires Lodestone.GetVersion() >= 1004000 (1.4.0).
+; All three return True when your pair is the active one, False on a None
+; argument or a rejected second registrant.
+
+; Scales the magnitude of a spell's effects.
+Bool Function RegisterMagicMagnitudeChannel(GlobalVariable akMultiplier, GlobalVariable akOffset) global native
+
+; Scales the duration of a spell's effects.
+Bool Function RegisterMagicDurationChannel(GlobalVariable akMultiplier, GlobalVariable akOffset) global native
+
+; Scales a spell's magicka cost. Use a multiplier below 1.0 to make casting
+; cheaper.
+Bool Function RegisterMagicCostChannel(GlobalVariable akMultiplier, GlobalVariable akOffset) global native
