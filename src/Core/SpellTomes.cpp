@@ -223,6 +223,38 @@ namespace Lodestone::Core::SpellTomes
 			return g_readReg.Unregister(a_receiver);
 		}
 
+		// Lodestone.RegisterForSpellTomeReadAlias(Alias) -> Bool
+		// Registers an alias whose script implements
+		// OnSpellTomeRead(Book, ObjectReference). Needed for ReferenceAlias
+		// consumers: an alias script is bound to the alias handle, which a
+		// Form-keyed registration cannot reach - a Papyrus Alias has no cast to
+		// Form, so the Form native above cannot serve one.
+		//
+		// The parameter type is not a guess. SKSE/RegistrationSet.h declares
+		// RegistrationSetBase::Register(const RE::BGSBaseAlias*) alongside the
+		// TESForm and ActiveEffect overloads, and RE/B/BGSBaseAlias.h carries
+		// VMTYPEID = 139, which is what the VM binds a Papyrus `Alias` argument
+		// to. Native param, RegistrationSet overload and .psc type therefore
+		// agree. The handle lands in the same _handles set QueueEvent already
+		// fans out to, so dispatch needs no change.
+		bool RegisterForSpellTomeReadAlias(RE::StaticFunctionTag*, RE::BGSBaseAlias* a_alias)
+		{
+			if (!a_alias) {
+				spdlog::warn("SpellTomes: RegisterForSpellTomeReadAlias got a None alias - ignored.");
+				return false;
+			}
+			return g_readReg.Register(a_alias);
+		}
+
+		// Lodestone.UnregisterForSpellTomeReadAlias(Alias) -> Bool
+		bool UnregisterForSpellTomeReadAlias(RE::StaticFunctionTag*, RE::BGSBaseAlias* a_alias)
+		{
+			if (!a_alias) {
+				return false;
+			}
+			return g_readReg.Unregister(a_alias);
+		}
+
 		// Lodestone.ConsumeSpellTome(Book, ObjectReference) -> Bool
 		// Removes one copy of akBook from akActor - the explicit "eat the tome now"
 		// call. Returns false on a None argument.
@@ -249,9 +281,12 @@ namespace Lodestone::Core::SpellTomes
 
 		a_vm->RegisterFunction("RegisterForSpellTomeRead", "Lodestone", RegisterForSpellTomeRead);
 		a_vm->RegisterFunction("UnregisterForSpellTomeRead", "Lodestone", UnregisterForSpellTomeRead);
+		a_vm->RegisterFunction("RegisterForSpellTomeReadAlias", "Lodestone", RegisterForSpellTomeReadAlias);
+		a_vm->RegisterFunction("UnregisterForSpellTomeReadAlias", "Lodestone", UnregisterForSpellTomeReadAlias);
 		a_vm->RegisterFunction("ConsumeSpellTome", "Lodestone", ConsumeSpellTome);
 
-		spdlog::info("SpellTomes: natives registered (RegisterForSpellTomeRead, UnregisterForSpellTomeRead, ConsumeSpellTome).");
+		spdlog::info("SpellTomes: natives registered (RegisterForSpellTomeRead, UnregisterForSpellTomeRead, "
+					 "RegisterForSpellTomeReadAlias, UnregisterForSpellTomeReadAlias, ConsumeSpellTome).");
 		return true;
 	}
 

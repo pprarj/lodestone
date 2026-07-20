@@ -90,8 +90,10 @@ String Function GetBookText(Book akBook) global native
 ; read, because the player did open it, and that is all that happens.
 ;
 ; This is unconditional - it does not wait for anyone to register. Registering
-; only adds the notification. To be told when a tome is read, register a form
-; whose script implements OnSpellTomeRead, and then decide everything yourself:
+; only adds the notification. To be told when a tome is read, register the form
+; or the alias whose script implements OnSpellTomeRead - RegisterForSpellTomeRead
+; for a form, RegisterForSpellTomeReadAlias for an alias script - and then decide
+; everything yourself:
 ;
 ;   - to teach the spell, call akBook.GetSpell() and AddSpell on the reader,
 ;     whenever your own system says the spell is earned. There is no Lodestone
@@ -108,13 +110,26 @@ String Function GetBookText(Book akBook) global native
 
 ; Registers akReceiver's script to receive OnSpellTomeRead. Registration is
 ; session-scoped (not saved) - re-register after each load. akReceiver is any
-; form carrying the script (a quest, an alias, a magic effect, a reference).
+; form carrying the script (a quest, a magic effect, a reference). For a handler
+; on an alias script, use RegisterForSpellTomeReadAlias instead.
 ; Returns True on success, False on a None form.
 Bool Function RegisterForSpellTomeRead(Form akReceiver) global native
 
 ; Stops akReceiver from receiving OnSpellTomeRead.
 ; Returns True on success, False on a None form.
 Bool Function UnregisterForSpellTomeRead(Form akReceiver) global native
+
+; Registers akAlias's script to receive OnSpellTomeRead. Use this when the
+; handler lives on an alias script (e.g. a ReferenceAlias) - a Form-keyed
+; registration cannot reach an alias, and a Papyrus Alias has no Form cast.
+; Registration is session-scoped (not saved) - re-register after each load.
+; Requires Lodestone.GetVersion() >= 1006000 (1.6.0).
+; Returns True on success, False on a None alias.
+Bool Function RegisterForSpellTomeReadAlias(Alias akAlias) global native
+
+; Stops akAlias's script from receiving OnSpellTomeRead.
+; Returns True on success, False on a None alias.
+Bool Function UnregisterForSpellTomeReadAlias(Alias akAlias) global native
 
 ; Removes one copy of akBook from akActor - the explicit "consume the tome now"
 ; call. Use it when your own logic decides the book should be eaten. Nothing in
@@ -123,8 +138,9 @@ Bool Function UnregisterForSpellTomeRead(Form akReceiver) global native
 Bool Function ConsumeSpellTome(Book akBook, ObjectReference akActor) global native
 
 ; --- Event, implemented by a registered script -----------------------------
-; Sent to each form registered via RegisterForSpellTomeRead, every time a spell
-; tome is read. akBook is the tome, akReader is who read it (normally the player).
+; Sent to each form registered via RegisterForSpellTomeRead and each alias
+; registered via RegisterForSpellTomeReadAlias, every time a spell tome is read.
+; akBook is the tome, akReader is who read it (normally the player).
 ;
 ; When this fires the spell has NOT been learned and the book has NOT been
 ; consumed - both are yours to decide. The event carries no return value and
