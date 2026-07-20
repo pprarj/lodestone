@@ -71,6 +71,16 @@ Detouring a function body means relocating the displaced prologue, which needs a
 
 Every thunk calls the original before doing anything of its own, on every path including failure. The value being adjusted is then whatever the engine finished computing, rather than something racing it - and if everything after the call fails, vanilla behavior is intact.
 
+**Exception: a hook whose purpose is to suppress the original.** Some engine functions perform the effect rather than compute a value to be adjusted, and for those there is nothing to call first - calling the original *is* the effect. Undoing it afterwards is not equivalent and is usually not even possible: the engine does not report what the state was beforehand, so the undo cannot tell "granted by this read" from "already had it", and any UI or message the original produced has already happened.
+
+Such a hook may skip the original, under three conditions:
+
+1. **Only on the path that suppresses.** Every other input still calls the original and returns its answer unchanged. A hook that never calls the original for anything is a rewrite, not a hook.
+2. **The thunk documents why the effect cannot be undone after the fact**, concretely - which state the engine does not hand back.
+3. **Every skipped side effect is accounted for**, listed at the thunk as suppressed on purpose or restored by hand. Skipping a call skips everything it did, not only the part being suppressed, and the ones that were never considered are the ones that surface as bug reports.
+
+`Core/SpellTomes` is the case this was written from: `TESObjectBOOK::Read` teaches the spell itself, so the only way not to teach it is not to call it. It restores `kHasBeenRead` by hand and says so.
+
 ### An address is not proven until a hook fires on it.
 
 An address taken from anywhere other than the shipped headers is a hypothesis. An inline hook on a wrong address installs and runs quietly on the wrong function, so "it compiles and the game loads" proves nothing. Prove it with a log-only pass that shows the hook firing on the right event with coherent arguments, then switch the behavior on.

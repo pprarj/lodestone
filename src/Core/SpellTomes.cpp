@@ -1,19 +1,41 @@
 // SpellTomes.cpp
 // Lodestone - Shared SKSE framework
 //
-// Production implementation of the "keep the spell tome" capability (Stage C.3).
-// See SpellTomes.h for the contract, the deliberately narrow scope (learning is
-// not this module's concern), and the validation note.
+// Production implementation of the spell-tome capability (Stage C.3, extended in
+// 1.5.0 to full interception). See SpellTomes.h for the contract and the
+// validation note.
 //
 // This SUPERSEDES the Part 1.5 trace (a passive vtable hook on TESObjectBOOK
 // Activate that only logged). Investigation identified the real seam as
 // TESObjectBOOK::Read - the function that teaches the spell and returns whether the
 // book is consumed - so production hooks that instead. The trace is in git history.
 //
+// WHAT CHANGED IN 1.5.0. Until 1.4.0 this module only stopped the tome from being
+// eaten: it called the original, which teaches the spell, and overrode the consume
+// flag. From 1.5.0 it suppresses the vanilla learn as well, so a spell tome read
+// grants nothing on its own. The consumer teaches with its own AddSpell, when its
+// own system says so, and eats the book with ConsumeSpellTome if it wants to.
+//
+// This is not a "default" that a consumer opts out of - it is what the module is
+// for. Lodestone is a modder resource: nobody installs it to play with, and a mod
+// that hooks tome reading needs the vanilla instant-learn gone before its own
+// system can exist. Leaving the learn on until someone registers would mean the
+// first thing every consumer does is fight the framework it depends on.
+//
+// So both paths suppress, and the ONLY difference a registration makes is whether
+// OnSpellTomeRead is dispatched:
+//
+//   spell tome        -> never call the original. No learn, no vanilla message,
+//                        return false so the caller keeps the book. Mark the book
+//                        read (see the thunk). Dispatch OnSpellTomeRead to whoever
+//                        registered, if anyone did.
+//   any other book    -> call the original, return what it returned. Skill books
+//                        and ordinary books are not this module's business.
+//
 // EXCEPTION SAFETY: a C++ exception escaping a hook into the engine is undefined
-// behavior. The thunk calls the original first (so learning is never affected) and
-// wraps everything after it; on any failure it returns the original result, i.e.
-// vanilla consumption behavior.
+// behavior. The tome path is wrapped and its failure path still returns false -
+// suppression is the contract, and a consumer seeing no event is a missed feature,
+// while a consumer seeing a spell it never granted is a broken save.
 //
 // Phase L2 - Stage C.3
 
@@ -31,6 +53,10 @@ namespace Lodestone::Core::SpellTomes
 		// each registered script. Session-scoped: not serialized, so a consumer
 		// re-registers after load (the runtime model the other modules use). The
 		// set has its own lock, so the natives and the hook can touch it safely.
+		//
+		// The hook does NOT ask whether anyone is registered. Suppression happens
+		// either way, so the answer would not change a decision - dispatching to an
+		// empty set is already a no-op.
 		SKSE::RegistrationSet<RE::TESObjectBOOK*, RE::TESObjectREFR*> g_readReg{ "OnSpellTomeRead" };
 
 		// debug: per-event lines are absent from a Release build, since Log.cpp
@@ -49,12 +75,60 @@ namespace Lodestone::Core::SpellTomes
 		// -------------------------------------------------------------------
 		// Hook: TESObjectBOOK::Read - the game function at RELOCATION_ID(17439, 17842)
 		//
-		// The original runs FIRST and unconditionally: it teaches the spell (or
-		// skill) exactly as vanilla, and returns whether the book should be
-		// consumed. Learning is never touched. For a spell tome we then return
-		// FALSE, so the caller keeps the book, and queue OnSpellTomeRead for any
-		// registered consumer. Non-tome books are passed through with the original's
-		// own return value.
+		// The original teaches the spell (or skill) and returns whether the book
+		// should be consumed. Non-tome books are always passed through with the
+		// original's own return value; this module has no opinion about them.
+		//
+		// WHY THIS THUNK DOES NOT CALL THE ORIGINAL ON THE TOME PATH. The house rule
+		// (CONVENTIONS, "The original runs first") is the right rule for a hook that
+		// adjusts a value the engine computed. This hook is the other kind: its job
+		// on a spell tome is to SUPPRESS what the original does. Read teaches the
+		// spell itself, so calling it and undoing the teach afterwards would mean
+		// RemoveSpell on a spell the actor may have legitimately known already -
+		// unrecoverable, since the engine does not say which case it was - and the
+		// vanilla "spell learned" message would have been shown regardless.
+		// Suppression is only possible by not making the call. CONVENTIONS carries
+		// that exception explicitly as of 1.5.0.
+		//
+		// WHAT IS RESTORED BY HAND, AND WHY ONLY THIS. Skipping the original skips
+		// every side effect it had, so each one is a deliberate decision:
+		//
+		//   kHasBeenRead  -> RESTORED below. The player did open the book; leaving
+		//                    it flagged unread makes it reappear as new in the
+		//                    inventory and in every "unread books" UI. Reading is
+		//                    what happened, learning is what was suppressed, and
+		//                    the flag records the first.
+		//   teach spell   -> suppressed. The entire point.
+		//   consume book  -> suppressed via the return value, as since 1.3.0.
+		//
+		// SKIPPING THE ORIGINAL IS VALIDATED IN GAME (1.5.0, Release build). Two
+		// reads, both on a tome whose spell the player did not know:
+		//
+		//   read from the inventory   -> spell NOT learned, book NOT consumed,
+		//                                book shown as read afterwards, read closed
+		//                                cleanly - no stuck menu, no lost input.
+		//   dropped, then picked up   -> arrived in the inventory unread, unlearned
+		//                                and unconsumed.
+		//
+		// The second one is the more informative of the two: acquisition does not
+		// reach this function at all, only an active read does. That is what keeps
+		// a tome taken from a container or a merchant unread, with this module
+		// doing nothing, exactly as in vanilla.
+		//
+		// Hook chaining cannot explain these results. Other plugins on this seam
+		// suppress CONSUMPTION only; none of them stops the spell from being
+		// learned, so "not learned" has no other possible source. That is the trap
+		// described below, and it is the reason this particular observation is
+		// worth trusting.
+		//
+		// STILL UNOBSERVED, so do not read this block as covering it: the event
+		// actually arriving at a registered consumer (none exists yet - it lands
+		// with the first consumer's migration), and the passthrough path for skill
+		// books and ordinary books.
+		//
+		// Nothing per-read appears in a Release log: those lines are spdlog::debug
+		// and Log.cpp caps the level at info under NDEBUG. Their absence during a
+		// test is expected and is not evidence that the hook did not run.
 		//
 		// VALIDATED IN GAME. Both the address and the meaning of the return value
 		// were unproven for a long time - the module could not even install, so
@@ -79,33 +153,47 @@ namespace Lodestone::Core::SpellTomes
 		{
 			static bool thunk(RE::TESObjectBOOK* a_this, RE::TESObjectREFR* a_reader)
 			{
-				const bool consumed = g_readHook.call<bool, RE::TESObjectBOOK*, RE::TESObjectREFR*>(a_this, a_reader);
-
-				try {
-					if (a_this && a_this->TeachesSpell()) {
-						// QueueEvent defers the dispatch off this hook's call stack
-						// onto a game task - safer than reaching into the VM from
-						// deep in the read path.
-						g_readReg.QueueEvent(a_this, a_reader);
-
-						if (ShouldLog()) {
-							const char* name = a_this->GetName();
-							spdlog::debug("SpellTomes: kept tome '{}' (0x{:08X}) after read (vanilla wanted consume={}).",
-								(name && *name) ? name : "<unnamed>",
-								a_this->GetFormID(),
-								consumed);
-						}
-
-						// Default: do not eat the tome. The consumer calls
-						// ConsumeSpellTome later if it wants it gone.
+				// TeachesSpell reads one flag on the book, so this is cheap enough
+				// to run before deciding anything.
+				const bool isTome = [a_this]() {
+					try {
+						return a_this && a_this->TeachesSpell();
+					} catch (...) {
 						return false;
 					}
-				} catch (...) {
-					// Never take the game down; fall back to vanilla behavior.
-					return consumed;
+				}();
+
+				if (!isTome) {
+					// Skill books, notes, ordinary books: untouched, including the
+					// original's own consume decision.
+					return g_readHook.call<bool, RE::TESObjectBOOK*, RE::TESObjectREFR*>(a_this, a_reader);
 				}
 
-				return consumed;
+				// From here the original is never called, so the spell is not
+				// taught and the vanilla message is not shown.
+				try {
+					a_this->data.flags.set(RE::OBJ_BOOK::Flag::kHasBeenRead);
+
+					// QueueEvent defers the dispatch off this hook's call stack
+					// onto a game task - safer than reaching into the VM from
+					// deep in the read path. An empty set makes it a no-op.
+					g_readReg.QueueEvent(a_this, a_reader);
+
+					if (ShouldLog()) {
+						const char* name = a_this->GetName();
+						spdlog::debug("SpellTomes: intercepted tome '{}' (0x{:08X}) - not learned, not consumed, marked read.",
+							(name && *name) ? name : "<unnamed>",
+							a_this->GetFormID());
+					}
+				} catch (...) {
+					// Never take the game down. Suppression already happened by not
+					// calling the original, and it stays in force: returning false
+					// here costs at most the read flag and the event, whereas any
+					// other answer would hand back behavior this module exists to
+					// remove.
+				}
+
+				return false;
 			}
 		};
 
@@ -175,12 +263,18 @@ namespace Lodestone::Core::SpellTomes
 	// did before. This module does not follow that rule, and the difference is
 	// intentional rather than an oversight.
 	//
-	// Installing it keeps spell tomes from being consumed, with no consumer
-	// involved. The capability is inverted compared to the rest: the default IS
-	// the behavior, and a consumer calls ConsumeSpellTome when it wants the book
-	// eaten after all. Making it opt-in would mean shipping a module that does
-	// nothing at all for anyone who has not written script against it, for a
-	// behavior that needs no configuration to be useful.
+	// Installing it stops spell tomes from being consumed AND from teaching their
+	// spell, with no consumer involved. The capability is inverted compared to the
+	// rest: suppression is unconditional, and a consumer adds behavior back on top
+	// of it - AddSpell when its own system decides the spell is earned,
+	// ConsumeSpellTome when it decides the book is spent.
+	//
+	// Making it opt-in was considered and rejected. Lodestone is a modder resource;
+	// nothing installs it to be played with. A mod that hooks tome reading needs
+	// the vanilla instant-learn gone before its own study or gating system can
+	// exist at all, so an opt-in default would mean the first thing every consumer
+	// does is undo the framework's default. There is nobody the conservative
+	// default would have protected.
 	//
 	// Recorded here because it is the sort of thing that reads like a bug to
 	// whoever finds it next - including the author, months from now.
@@ -188,9 +282,9 @@ namespace Lodestone::Core::SpellTomes
 	void Install()
 	{
 		try {
-			// TESObjectBOOK::Read. The ID is not in the shipped 3.5.3 headers; it is
-			// taken from the CommonLibSSE-NG source and is pending in-game
-			// confirmation (see SpellTomes.h).
+			// TESObjectBOOK::Read. The ID is not in the shipped 3.5.3 headers; it
+			// came from the CommonLibSSE-NG source, and the trace quoted at the
+			// thunk is what proved it.
 			REL::Relocation<std::uintptr_t> target{ REL::RelocationID(17439, 17842) };
 
 			// The guard that used to stand here is gone, and so is the branch hook
@@ -204,10 +298,11 @@ namespace Lodestone::Core::SpellTomes
 			// swap. An inline hook is the correct instrument: SafetyHook relocates
 			// the displaced prologue and suspends other threads while patching.
 			//
-			// The address itself is still UNPROVEN. It did not come from the
-			// shipped headers - it came from an outside source - and no one has
-			// ever seen this hook run. An inline hook on the wrong address succeeds
-			// silently, which is why the thunk above only logs for now.
+			// The address was a hypothesis for a long time, on the grounds that an
+			// inline hook on a wrong address installs and runs quietly on the wrong
+			// function. It was settled by the log-only pass quoted at the thunk;
+			// the wording that still called it unproven outlived that trace and was
+			// corrected in 1.5.0.
 			g_readHook = safetyhook::create_inline(
 				reinterpret_cast<void*>(target.address()),
 				reinterpret_cast<void*>(&ReadHook::thunk));
@@ -219,7 +314,8 @@ namespace Lodestone::Core::SpellTomes
 			}
 
 			spdlog::info("SpellTomes: hook installed on TESObjectBOOK::Read. "
-						 "Spell tomes are learned as vanilla but kept, not consumed.");
+						 "Spell tomes are neither learned nor consumed on read; "
+						 "a registered consumer owns AddSpell and ConsumeSpellTome.");
 		} catch (const std::exception& e) {
 			spdlog::error("SpellTomes: failed to install: {} - spell-tome behavior unchanged.", e.what());
 		} catch (...) {

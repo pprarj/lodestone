@@ -83,14 +83,28 @@ Bool Function ClearBookText(Book akBook) global native
 ; Returns "" on a None book, or the VM default "" if the DLL is absent.
 String Function GetBookText(Book akBook) global native
 
-; --- SpellTomes (added in DLL 1.3.0) ---------------------------------------
+; --- SpellTomes (added in DLL 1.3.0, full interception since 1.5.0) --------
 
-; With the DLL installed, reading a spell tome learns the spell exactly as
-; vanilla but does NOT consume the book. Learning is untouched - that is not
-; this DLL's concern; the only change is that the tome is kept. To be told when
-; a tome is read, register a form whose script implements OnSpellTomeRead; to
-; finally consume a tome (e.g. after your own study finishes), call
-; ConsumeSpellTome. If nothing ever calls ConsumeSpellTome, the tome stays.
+; With the DLL installed, reading a spell tome does NOTHING on its own: the
+; spell is not learned and the book is not consumed. The book is flagged as
+; read, because the player did open it, and that is all that happens.
+;
+; This is unconditional - it does not wait for anyone to register. Registering
+; only adds the notification. To be told when a tome is read, register a form
+; whose script implements OnSpellTomeRead, and then decide everything yourself:
+;
+;   - to teach the spell, call akBook.GetSpell() and AddSpell on the reader,
+;     whenever your own system says the spell is earned. There is no Lodestone
+;     native for this and none is needed - it is plain Papyrus.
+;   - to eat the book, call ConsumeSpellTome. If nothing ever calls it, the
+;     tome stays in the inventory.
+;
+; Vanilla behavior is reproducible: call both immediately in your handler.
+;
+; NOTE FOR 1.4.0 AND EARLIER CONSUMERS: up to 1.4.0 the DLL kept the book but
+; still let the spell be learned on read. If your script assumed the spell was
+; already known when OnSpellTomeRead fired, it no longer is, and teaching is
+; now your call. Gate on Lodestone.GetVersion() >= 1005000.
 
 ; Registers akReceiver's script to receive OnSpellTomeRead. Registration is
 ; session-scoped (not saved) - re-register after each load. akReceiver is any
@@ -111,11 +125,19 @@ Bool Function ConsumeSpellTome(Book akBook, ObjectReference akActor) global nati
 ; --- Event, implemented by a registered script -----------------------------
 ; Sent to each form registered via RegisterForSpellTomeRead, every time a spell
 ; tome is read. akBook is the tome, akReader is who read it (normally the player).
-; The spell is already learned by the time this fires; the book has been kept.
+;
+; When this fires the spell has NOT been learned and the book has NOT been
+; consumed - both are yours to decide. The event carries no return value and
+; cannot: Papyrus events do not have one, and this dispatch is asynchronous, so
+; the DLL is long done by the time your handler runs. It never waits to be told
+; what to do; it suppresses, reports, and you act.
+;
 ; Declare it in your script exactly as below:
 ;
 ;   Event OnSpellTomeRead(Book akBook, ObjectReference akReader)
-;       ; your logic here (start study, consume the tome via ConsumeSpellTome, ...)
+;       ; nothing has happened yet. Start a study session, open a menu, check a
+;       ; gate - and teach with AddSpell / eat with ConsumeSpellTome if and when
+;       ; you decide to.
 ;   EndEvent
 
 
