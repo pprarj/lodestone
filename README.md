@@ -24,7 +24,7 @@ Currently implemented. Every module is Core - it never knows a consumer by name.
 | CastTime | 1.1.0 | `RegisterCastTimeChannel()` |
 | BookFramework | 1.2.0 | `SetBookText()`, `AppendBookText()`, `ClearBookText()`, `GetBookText()` |
 | SpellTomes | 1.3.0 (behavior changed in 1.5.0; alias registration added in 1.6.0) | `RegisterForSpellTomeRead()`, `UnregisterForSpellTomeRead()`, `RegisterForSpellTomeReadAlias()`, `UnregisterForSpellTomeReadAlias()`, `ConsumeSpellTome()`, event `OnSpellTomeRead` |
-| MagicScaling | 1.4.0 | `RegisterMagicMagnitudeChannel()`, `RegisterMagicDurationChannel()`, `RegisterMagicCostChannel()` |
+| MagicScaling | 1.4.0 (magnitude moved to the perk entry seam in 1.7.0 - now shows in the spell menu, and no longer touches enchantments, food or potions) | `RegisterMagicMagnitudeChannel()`, `RegisterMagicDurationChannel()`, `RegisterMagicCostChannel()` |
 
 All functions are global natives on the `Lodestone` script, so they are called as `Lodestone.GetVersion()`. Full signatures and per-function notes are in `Lodestone.psc`, which is the authoritative reference - a consumer copies that file into its own scripts.
 

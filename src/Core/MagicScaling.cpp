@@ -59,15 +59,36 @@
 // CalculateMagnitude to match it, and that asymmetry is the entire reason two
 // channels display and one does not.
 //
-// The seam that would fix it is Actor::ForEachPerkEntry (vfunc 0x100), where the
-// engine asks an actor which perk entries answer for an entry point. Traced
-// 2026-07-20: opening the spell menu queries kModSpellCost, kModSpellMagnitude
-// and kModSpellDuration there, interleaved with this module's own CalculateCost
-// lines, and re-queries on every menu open. A plugin contributes an entry the
-// actor does not hold as a real perk by hooking it - the technique Perk Entry
-// Point Extender uses in production. Not implemented here yet; it is a behavior
-// change, because scaling would then compose with real perks instead of
-// applying after them.
+// FIXED 2026-07-21 by moving magnitude to Actor::ForEachPerkEntry (vfunc 0x100),
+// where the engine asks an actor which perk entries answer for an entry point -
+// a question the spell menu asks too, and re-asks on every open. Magnitude is
+// contributed there as a synthetic perk entry the actor does not hold, which is
+// the technique Perk Entry Point Extender uses in production.
+//
+// Measured with the consumer driving the channel, attribute 0 against 85:
+//
+//   Firebolt        tooltip 25 -> 34    mag 25.0000 -> 34.6475
+//   Lightning Bolt  tooltip 40 -> 55    mag 40.0000 -> 55.4360
+//   Healing         tooltip 10 -> 13    mag 10.0000 -> 13.8590
+//
+// and, in the same save, NOT applying where it must not:
+//
+//   Crossbow of Burning   10 -> 10   (13 before the scope filter existed)
+//   Potion of Healing     50 -> 50
+//   Green Apple            2 ->  2
+//
+// TWO THINGS THAT COST A CRASH AND FIVE ATTEMPTS, so they are written down:
+//
+//   A synthetic entry cannot pass on its own. Zero condition tabs does not mean
+//   "always passes" - it means no tab matched, which the engine treats as
+//   failure. CheckConditionFilters (vfunc 0x00) is hooked and answers for this
+//   one entry by pointer identity; everything else tail-calls the original.
+//
+//   entryData.numArgs is NOT an argument count. It is the perk condition tab
+//   count - the third byte of DATA in the PERK record - and it must agree with
+//   the conditions array. Declaring 3 tabs with a null array walked the engine
+//   off the end of it: access violation inside condition evaluation. There is a
+//   guard that refuses to install when the two disagree.
 //
 // REJECTED TARGETS, all ruled out by measurement rather than by argument:
 //   SpellItem::AdjustCost (vfunc 0x63) - never runs on the player's cast path.
@@ -472,6 +493,114 @@ namespace Lodestone::Core::MagicScaling
 		// now routes its condition check through this thunk - so the body is a
 		// pointer compare and a tail call, and anything that is not ours reaches
 		// the engine's own implementation untouched.
+		// -------------------------------------------------------------------
+		// TEMPORARY - scope trace. READ ONLY.
+		//
+		// Moving magnitude to the perk entry seam cost the IsOrdinarySpell
+		// filter. ForEachPerkEntry is handed the entry point and the visitor and
+		// nothing else, so there is no spell to test, and magnitude now scales
+		// every effect the player carries - armour enchantments, food, potions,
+		// quest abilities. The header promises the opposite, and this is exactly
+		// the defect the third-party plugins being replaced are known to have,
+		// so it is a reason this module exists rather than a detail.
+		//
+		// CheckConditionFilters DOES receive the entry point's arguments. If the
+		// spell is among them the filter can be restored in the same place the
+		// condition is already answered. Whether it is there, and in what shape,
+		// is not something the headers say - hence a trace instead of a guess.
+		//
+		// EVERY READ HERE IS GUARDED. a_args is an opaque pointer from the
+		// engine, and this module has already crashed a game once this week by
+		// dereferencing something it had reasoned about rather than checked.
+		// VirtualQuery confirms a page is committed and readable before any
+		// load, and a candidate is only treated as a form when its first qword
+		// points inside the game module, which is where a vtable would be.
+		// -------------------------------------------------------------------
+		bool IsReadable(const void* a_ptr, std::size_t a_size)
+		{
+			if (!a_ptr) {
+				return false;
+			}
+
+			MEMORY_BASIC_INFORMATION mbi{};
+			if (::VirtualQuery(a_ptr, &mbi, sizeof(mbi)) == 0 || mbi.State != MEM_COMMIT) {
+				return false;
+			}
+
+			constexpr DWORD kReadable = PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY |
+										PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
+			if ((mbi.Protect & kReadable) == 0 || (mbi.Protect & PAGE_GUARD) != 0) {
+				return false;
+			}
+
+			const auto start     = reinterpret_cast<std::uintptr_t>(a_ptr);
+			const auto regionEnd = reinterpret_cast<std::uintptr_t>(mbi.BaseAddress) + mbi.RegionSize;
+			return (start + a_size) <= regionEnd;
+		}
+
+		// A form's first qword is its vtable, and every game vtable lives in the
+		// .rdata segment of SkyrimSE.exe. Anything whose first qword falls
+		// outside that segment is not a form and is not read as one.
+		bool LooksLikeForm(std::uintptr_t a_candidate)
+		{
+			if (a_candidate == 0 || (a_candidate & 0x7) != 0) {
+				return false;
+			}
+
+			if (!IsReadable(reinterpret_cast<const void*>(a_candidate), sizeof(std::uintptr_t))) {
+				return false;
+			}
+
+			const auto vtbl    = *reinterpret_cast<const std::uintptr_t*>(a_candidate);
+			const auto segment = REL::Module::get().segment(REL::Segment::rdata);
+			const auto start   = segment.address();
+			const auto end     = start + segment.size();
+			return vtbl >= start && vtbl < end;
+		}
+
+		// SCOPE, restored at the new seam.
+		//
+		// Traced in game 2026-07-21. CheckConditionFilters receives the entry
+		// point's own arguments, and for kModSpellMagnitude they are:
+		//
+		//   a_numArgs = 3
+		//   arg[0]  FORM 0x00000014 type 62   the perk owner (the player)
+		//   arg[1]  FORM 0x00012FD0 type 22   the spell ('Firebolt')
+		//   arg[2]  null
+		//
+		// So the spell IS reachable here, and the IsOrdinarySpell filter that
+		// AdjustForPerks used can be applied in the same call that answers the
+		// condition. Answering "my conditions pass" and "this is in scope" turn
+		// out to be the same question asked once.
+		//
+		// Anything unreadable, or not an ordinary spell, answers false and the
+		// entry does not apply. Narrow is the recoverable direction, as the
+		// header's SCOPE note already argues: widening later is additive,
+		// whereas having scaled every enchantment and potion in a load order is
+		// not something an already played save can take back. That failure mode
+		// is not hypothetical - it is what the third-party plugins this module
+		// replaces are known to do.
+		bool SyntheticEntryApplies(std::uint32_t a_numArgs, void* a_args)
+		{
+			constexpr std::size_t kSpellSlot = 1;
+
+			if (a_numArgs <= kSpellSlot) {
+				return false;
+			}
+
+			if (!IsReadable(a_args, (kSpellSlot + 1) * sizeof(std::uintptr_t))) {
+				return false;
+			}
+
+			const auto raw = reinterpret_cast<const std::uintptr_t*>(a_args)[kSpellSlot];
+			if (!LooksLikeForm(raw)) {
+				return false;
+			}
+
+			auto* item = reinterpret_cast<RE::TESForm*>(raw)->As<RE::MagicItem>();
+			return IsOrdinarySpell(item);
+		}
+
 		bool CheckConditionFiltersThunk(RE::BGSEntryPointPerkEntry* a_this, std::uint32_t a_numArgs, void* a_args)
 		{
 			const auto vtable   = a_this ? *reinterpret_cast<std::uintptr_t*>(a_this) : 0;
@@ -481,38 +610,15 @@ namespace Lodestone::Core::MagicScaling
 			}
 
 			if (a_this && a_this == g_syntheticEntry) {
-				return true;
+				return SyntheticEntryApplies(a_numArgs, a_args);
 			}
 
 			return reinterpret_cast<decltype(&CheckConditionFiltersThunk)>(original)(a_this, a_numArgs, a_args);
 		}
 
-		// E1 built this entry field by field and the engine discarded it: the
-		// visitor took 5774 calls without complaint and no number moved. That
-		// rules out "the hook never fires" and leaves two possibilities, which
-		// no amount of re-reading the headers can separate -
-		//
-		//   (a) the entry is malformed in some field the headers do not spell
-		//       out, so the engine rejects it;
-		//   (b) contributing through the visitor does not feed the result at
-		//       all, and the whole approach is wrong.
-		//
-		// E1b separates them by measurement instead of by argument. It CLONES a
-		// real entry that the engine demonstrably honours - Augmented Flames,
-		// measured moving Firebolt 25 -> 31 - and swaps only the functionData
-		// pointer for our own. Every field we might have gotten wrong then comes
-		// from something known to work.
-		//
-		//   clone shows 50 -> injection is sound, our construction was wrong,
-		//                     and the field dump below says which field.
-		//   clone shows 25 -> the visitor is not the seam that feeds the result,
-		//                     and design D needs rethinking before any more of it
-		//                     gets built.
-		//
-		// The clone shares the original's conditions array and perk pointer. That
-		// is read-only for evaluation and this copy is never destructed, so
-		// nothing owned by the game is freed.
-		RE::BGSEntryPointPerkEntry* g_referenceEntry{ nullptr };
+		// The synthetic entry carries NO conditions, and that is deliberate: its
+		// scope is decided in CheckConditionFilters instead, where the spell is
+		// actually reachable. See SyntheticEntryApplies.
 
 		void DumpEntry(const char* a_label, RE::BGSEntryPointPerkEntry* a_entry)
 		{
@@ -541,56 +647,32 @@ namespace Lodestone::Core::MagicScaling
 				reinterpret_cast<std::uintptr_t>(a_entry->perk));
 		}
 
-		// Augmented Flames rank 1 - the entry whose effect on the tooltip was
-		// measured directly. Any perk with a kModSpellMagnitude/kOneValue entry
-		// would do; this one is used because its behavior is already known.
-		constexpr RE::FormID kReferencePerkID = 0x000581E7;
-
-		RE::BGSEntryPointPerkEntry* FindReferenceEntry()
+		// The entry needs a non-null perk pointer, and it does NOT need to be any
+		// particular perk. E1e settled that by accident: the entry borrowed
+		// Augmented Flames and applied to every spell for a player who did not
+		// have that perk, so the engine plainly does not use this pointer to
+		// decide ownership.
+		//
+		// So the first perk in the load order serves, and depending on "some
+		// BGSPerk exists" is not a dependency worth worrying about - the base
+		// game ships hundreds. Pinning a specific vanilla form ID here would be
+		// the fragile choice, not this.
+		RE::BGSPerk* FindAnyPerk()
 		{
 			auto* handler = RE::TESDataHandler::GetSingleton();
 			if (!handler) {
 				return nullptr;
 			}
 
-			RE::BGSEntryPointPerkEntry* fallback = nullptr;
-
 			for (auto* perk : handler->GetFormArray<RE::BGSPerk>()) {
-				if (!perk) {
-					continue;
-				}
-
-				for (auto* entry : perk->perkEntries) {
-					if (!entry || entry->GetType() != RE::PERK_ENTRY_TYPE::kEntryPoint) {
-						continue;
-					}
-
-					auto* epEntry = static_cast<RE::BGSEntryPointPerkEntry*>(entry);
-					if (epEntry->entryData.entryPoint.get() != RE::BGSEntryPoint::ENTRY_POINT::kModSpellMagnitude) {
-						continue;
-					}
-
-					auto* fd = epEntry->functionData;
-					if (!fd || fd->GetType() != RE::BGSEntryPointFunctionData::FunctionType::kOneValue) {
-						continue;
-					}
-
-					if (perk->GetFormID() == kReferencePerkID) {
-						spdlog::info("MagicScaling/E1b: reference entry is '{}' (0x{:08X}), the measured one.",
-							perk->GetName() ? perk->GetName() : "<unnamed>", perk->GetFormID());
-						return epEntry;
-					}
-
-					if (!fallback) {
-						fallback = epEntry;
-						spdlog::info("MagicScaling/E1b: holding '{}' (0x{:08X}) as a fallback reference.",
-							perk->GetName() ? perk->GetName() : "<unnamed>", perk->GetFormID());
-					}
+				if (perk) {
+					return perk;
 				}
 			}
 
-			return fallback;
+			return nullptr;
 		}
+
 
 		bool BuildSyntheticEntry()
 		{
@@ -621,8 +703,7 @@ namespace Lodestone::Core::MagicScaling
 			// than to fire.
 			std::memset(g_syntheticEntryStorage, 0, sizeof(g_syntheticEntryStorage));
 
-			auto* entry      = reinterpret_cast<RE::BGSEntryPointPerkEntry*>(g_syntheticEntryStorage);
-			g_referenceEntry = FindReferenceEntry();
+			auto* entry = reinterpret_cast<RE::BGSEntryPointPerkEntry*>(g_syntheticEntryStorage);
 
 			*reinterpret_cast<std::uintptr_t*>(entry) = entryVtbl.address();
 			entry->header.rank                        = 0;
@@ -631,14 +712,13 @@ namespace Lodestone::Core::MagicScaling
 			entry->entryData.function                 = RE::BGSEntryPointPerkEntry::EntryData::Function::kMultiplyValue;
 			entry->entryData.numArgs                  = kNoConditionTabs;
 			entry->functionData                       = data;
-			entry->perk                               = g_referenceEntry ? g_referenceEntry->perk : nullptr;
+			entry->perk                               = FindAnyPerk();
 			// conditions stays null from the memset, and the tab count above
 			// agrees with it. Those two must move together - see the guard.
 
 			g_syntheticEntry = entry;
 
-			DumpEntry("REFERENCE (real, honoured by the engine)", g_referenceEntry);
-			DumpEntry("INJECTED  (E1d: no conditions, borrowed perk)", g_syntheticEntry);
+			DumpEntry("INJECTED (conditionless; scope enforced in CheckConditionFilters)", g_syntheticEntry);
 
 			// THE GUARD. E1c crashed the game because the tab count and the
 			// conditions array disagreed, and nothing checked. This is cheap,
