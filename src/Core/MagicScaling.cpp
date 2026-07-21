@@ -23,6 +23,52 @@
 // and three different effects, which is what makes a single multiplier per
 // channel the right shape rather than something per-spell.
 //
+// CONFIRMED END TO END on 2026-07-20, with a live consumer driving all three
+// channels and no third-party attribute plugin anywhere in the path. Firebolt,
+// player attribute 0 against 85, read off the effect application site rather
+// than off a tooltip:
+//
+//   magnitude  25.0000 -> 34.6475   (1.3859, exact)
+//   Flames sustained damage, per-tick mean over 179 and 137 ticks:
+//              8.012/s -> 11.096/s  (1.3849 measured against 1.3859 expected)
+//   cost       36.4947 -> 28.0571   (0.7688, exact)
+//
+// The Part 1.5 magnitude figures above are therefore sound, not an artifact of
+// the attribute plugin that was active when they were taken - a suspicion that
+// was raised and is now settled by measurement.
+//
+// HOW THIS WAS ALMOST MISSED, because the same trap is still there. Magnitude
+// was reported broken on the strength of floating combat damage numbers. Flames
+// applies about 0.136 per 17ms tick, and 0.189 once scaled; both render as "1".
+// A health-delta test did not settle it either, because timing a cast by hand
+// carried an error the same size as the effect. What settled it was summing the
+// per-tick values out of this module's own log, which is timestamped. When a
+// test shows no difference, check first that it could have shown one.
+//
+// WHAT THIS MODULE DOES NOT DO: the spell menu. Magnitude and duration in the
+// tooltip do not move, and that is a consequence of the seam, NOT a vanilla UI
+// limitation - measured 2026-07-20 with a vanilla perk:
+//
+//   no perk               description "25 points"
+//   Augmented Flames on   description "31 points"   (25 * 1.25)
+//
+// So the description does consult perk entry points. AdjustForPerks runs when an
+// active effect is instantiated on a target, which the menu never does, so
+// nothing written there can reach it. Cost shows in the menu only because
+// CalculateCost happens to be a function the menu calls; there is no
+// CalculateMagnitude to match it, and that asymmetry is the entire reason two
+// channels display and one does not.
+//
+// The seam that would fix it is Actor::ForEachPerkEntry (vfunc 0x100), where the
+// engine asks an actor which perk entries answer for an entry point. Traced
+// 2026-07-20: opening the spell menu queries kModSpellCost, kModSpellMagnitude
+// and kModSpellDuration there, interleaved with this module's own CalculateCost
+// lines, and re-queries on every menu open. A plugin contributes an entry the
+// actor does not hold as a real perk by hooking it - the technique Perk Entry
+// Point Extender uses in production. Not implemented here yet; it is a behavior
+// change, because scaling would then compose with real perks instead of
+// applying after them.
+//
 // REJECTED TARGETS, all ruled out by measurement rather than by argument:
 //   SpellItem::AdjustCost (vfunc 0x63) - never runs on the player's cast path.
 //     It fired for exactly one modded spell across every session.
@@ -31,6 +77,10 @@
 //   BGSEntryPoint::HandleEntryPoint - the address is a function ID, so it needs
 //     an inline hook, and its signature is variadic. CalculateCost gives the
 //     same number with a signature that is written down in the headers.
+//     NOTE: this rejection is about COST only. It does not carry over to the
+//     tooltip problem described below, where the answer turned out to be
+//     Actor::ForEachPerkEntry - a plain virtual, so a vtable swap, with no
+//     variadic argument to forward.
 //
 // AdjustForPerks was itself wrongly dismissed on the first pass, and the reason
 // is worth keeping: the runs that missed it cast at nothing (a concentration
@@ -267,13 +317,26 @@ namespace Lodestone::Core::MagicScaling
 					a_this->duration = Apply(beforeDur, durMult, durOffset);
 				}
 
-				if (ShouldLogEvents() &&
-					(a_this->magnitude != beforeMag || a_this->duration != beforeDur)) {
-					spdlog::debug("MagicScaling: '{}' (0x{:08X}) mag {:.4f} -> {:.4f}, dur {:.4f} -> {:.4f}",
+				// Logged unconditionally once past the filters, and the channel
+				// state is logged with it. This used to print only when a value
+				// actually moved, which reads as the tidier choice and is not: a
+				// trace that is silent when nothing changed cannot tell "the
+				// thunk ran and wrote nothing" apart from "the thunk never ran
+				// for this effect". Those two have completely different causes,
+				// and a whole diagnostic was spent distinguishing them from
+				// evidence this line could have carried in the first place.
+				// beforeMag and the mult/offset pair are here for the same
+				// reason - a reader should not need a second session to find out
+				// whether Read succeeded.
+				if (ShouldLogEvents()) {
+					spdlog::debug("MagicScaling: '{}' (0x{:08X}) mag {:.4f} -> {:.4f}, dur {:.4f} -> {:.4f} "
+								  "[haveMag={} magMult={:.4f} magOffset={:.4f} haveDur={} durMult={:.4f} durOffset={:.4f}]",
 						a_this->spell && a_this->spell->GetName() ? a_this->spell->GetName() : "<unnamed>",
 						a_this->spell ? a_this->spell->GetFormID() : 0,
 						beforeMag, a_this->magnitude,
-						beforeDur, a_this->duration);
+						beforeDur, a_this->duration,
+						haveMag, magMult, magOffset,
+						haveDur, durMult, durOffset);
 				}
 			} catch (...) {
 				// Swallow. Scaled magic is a gameplay nicety; taking the game down
