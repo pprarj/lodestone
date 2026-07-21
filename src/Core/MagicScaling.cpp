@@ -241,24 +241,48 @@ namespace Lodestone::Core::MagicScaling
 			{ RE::VTABLE_ScriptEffect[0] },
 		};
 
-		std::uintptr_t FindOriginal(std::uintptr_t a_vtable)
+		std::uintptr_t FindOriginalIn(const EffectType* a_table, std::size_t a_count, std::uintptr_t a_vtable)
 		{
-			for (const auto& t : g_effectTypes) {
-				if (t.address == a_vtable) {
-					return t.original;
+			for (std::size_t i = 0; i < a_count; ++i) {
+				if (a_table[i].address == a_vtable) {
+					return a_table[i].original;
 				}
 			}
 			return 0;
 		}
 
+		std::uintptr_t FindOriginal(std::uintptr_t a_vtable)
+		{
+			return FindOriginalIn(g_effectTypes, std::size(g_effectTypes), a_vtable);
+		}
+
+		// Reads every original before swapping any slot, for the same reason
+		// Install() does it in two passes: from the first write on a thunk may
+		// fire, and every one of them has to find its original.
+		void InstallVfunc(EffectType* a_table, std::size_t a_count, std::size_t a_index, void* a_thunk)
+		{
+			for (std::size_t i = 0; i < a_count; ++i) {
+				REL::Relocation<std::uintptr_t> vtbl{ a_table[i].vtable };
+				a_table[i].address  = vtbl.address();
+				a_table[i].original = *reinterpret_cast<std::uintptr_t*>(a_table[i].address + (a_index * sizeof(std::uintptr_t)));
+			}
+
+			for (std::size_t i = 0; i < a_count; ++i) {
+				REL::Relocation<std::uintptr_t> vtbl{ a_table[i].vtable };
+				vtbl.write_vfunc(a_index, reinterpret_cast<std::uintptr_t>(a_thunk));
+			}
+		}
+
 		// -------------------------------------------------------------------
 		// Hook: ActiveEffect::AdjustForPerks - vfunc 0x00
 		//
-		// Carries both magnitude and duration. The original runs first and is what
-		// applies the engine's own perk work - the trace measured magnitude moving
-		// 8.0 -> 11.0872 across this call - so the values read afterwards are the
-		// finished ones, and scaling them is additive to the engine rather than a
-		// fight with it.
+		// DURATION ONLY as of stage E3. Magnitude used to be applied here too,
+		// and moved to the perk entry seam because this one is invisible to the
+		// spell menu: an active effect is instantiated on a target, which the
+		// menu never does. The original runs first and is what applies the
+		// engine's own perk work, so the value read afterwards is the finished
+		// one, and scaling it is additive to the engine rather than a fight
+		// with it.
 		//
 		// Filters are ordered cheapest first. This fires for every effect applied
 		// to every actor, and the trace showed the overwhelming majority are other
@@ -281,13 +305,21 @@ namespace Lodestone::Core::MagicScaling
 					return;
 				}
 
-				// 1. Either channel registered? Cuts 100% when no consumer is
-				//    present, for the cost of four pointer compares.
-				float magMult = 0.0f, magOffset = 0.0f;
-				float durMult = 0.0f, durOffset = 0.0f;
-				const bool haveMag = g_magnitude.Read(magMult, magOffset);
+				// STAGE E3 - MAGNITUDE IS NO LONGER APPLIED HERE.
+				//
+				// It is contributed as a perk entry at kModSpellMagnitude
+				// instead, which is the only seam the spell menu reads. Writing
+				// it in both places applied the multiplier twice - measured as
+				// 1.3859 squared on damage while E2 had both live.
+				//
+				// Duration still applies here, because its channel has not moved
+				// yet. The menu's duration column is wrong for exactly the reason
+				// magnitude's was, and moving it is the next step rather than
+				// this one: one variable at a time is what this module learned
+				// the expensive way.
+				float      durMult = 0.0f, durOffset = 0.0f;
 				const bool haveDur = g_duration.Read(durMult, durOffset);
-				if (!haveMag && !haveDur) {
+				if (!haveDur) {
 					return;
 				}
 
@@ -303,17 +335,13 @@ namespace Lodestone::Core::MagicScaling
 					return;
 				}
 
-				const float beforeMag = a_this->magnitude;
-				const float beforeDur = a_this->duration;
+				const float observedMag = a_this->magnitude;
+				const float beforeDur   = a_this->duration;
 
-				// 4. Scale only what exists. An effect with no magnitude keeps
-				//    none - applying an offset to zero would invent magnitude on
+				// 4. Scale only what exists. An effect with no duration keeps
+				//    none - applying an offset to zero would invent duration on
 				//    effects that never had any.
-				if (haveMag && beforeMag != 0.0f) {
-					a_this->magnitude = Apply(beforeMag, magMult, magOffset);
-				}
-
-				if (haveDur && beforeDur != 0.0f) {
+				if (beforeDur != 0.0f) {
 					a_this->duration = Apply(beforeDur, durMult, durOffset);
 				}
 
@@ -329,19 +357,393 @@ namespace Lodestone::Core::MagicScaling
 				// reason - a reader should not need a second session to find out
 				// whether Read succeeded.
 				if (ShouldLogEvents()) {
-					spdlog::debug("MagicScaling: '{}' (0x{:08X}) mag {:.4f} -> {:.4f}, dur {:.4f} -> {:.4f} "
-								  "[haveMag={} magMult={:.4f} magOffset={:.4f} haveDur={} durMult={:.4f} durOffset={:.4f}]",
+					// The magnitude is logged as OBSERVED, not as changed - this
+					// hook no longer touches it. Reading it here is still worth
+					// the line, because it is what the perk entry seam produced,
+					// so the two stages can be checked against each other from
+					// one log.
+					spdlog::debug("MagicScaling: '{}' (0x{:08X}) mag {:.4f} (observed; applied at the perk entry seam), "
+								  "dur {:.4f} -> {:.4f} [durMult={:.4f} durOffset={:.4f}]",
 						a_this->spell && a_this->spell->GetName() ? a_this->spell->GetName() : "<unnamed>",
 						a_this->spell ? a_this->spell->GetFormID() : 0,
-						beforeMag, a_this->magnitude,
+						observedMag,
 						beforeDur, a_this->duration,
-						haveMag, magMult, magOffset,
-						haveDur, durMult, durOffset);
+						durMult, durOffset);
 				}
 			} catch (...) {
 				// Swallow. Scaled magic is a gameplay nicety; taking the game down
 				// over it is not a trade this plugin makes. The original already
 				// ran, so vanilla behavior is intact.
+			}
+		}
+
+		// -------------------------------------------------------------------
+		// STAGE E1 - the spell menu seam. EXPERIMENT, fixed multiplier.
+		//
+		// WHY THIS EXISTS. AdjustForPerks scales the effect that lands on a
+		// target, which is why damage moves and the menu never does: the menu
+		// instantiates no active effect. Cost displays only because
+		// CalculateCost happens to be a function the menu calls, and there is no
+		// CalculateMagnitude to match it. See the header block.
+		//
+		// Actor::ForEachPerkEntry (vfunc 0x100) is where the engine asks an actor
+		// which perk entries answer for an entry point. Traced 2026-07-20:
+		// opening the spell menu queries kModSpellMagnitude and kModSpellDuration
+		// there, interleaved with this module's own CalculateCost lines, and
+		// re-queries on every open. Contributing an entry the actor does not hold
+		// as a real perk is what makes the number move in both places at once.
+		//
+		// E1 PROVES ONE THING AND CHANGES NOTHING ELSE. The multiplier below is a
+		// constant, not the channel, and AdjustForPerks still does the real
+		// scaling exactly as before. If the tooltip shows the constant AND the
+		// damage follows it, construction and composition are sound and E2 can
+		// wire the channel in. If it does not, nothing that works today broke.
+		//
+		// THE ENTRY IS BUILT, NOT SUBCLASSED. The storage is ours and the vtable
+		// pointers are the engine's, so the engine's own implementations run
+		// against our fields. Deriving in C++ would mean emitting a vtable for
+		// every virtual in BGSPerkEntry, and any one of them getting subtly
+		// different behavior from the engine's is a difference that would not
+		// show up until it mattered. Layouts are declared in the headers, so this
+		// is construction rather than guesswork:
+		//
+		//   BGSEntryPointPerkEntry   vtable @00, header @08, entryData @10,
+		//                            functionData @18, conditions @20, perk @28
+		//   BGSEntryPointFunctionDataOneValue   vtable @00, data (float) @08
+		//
+		// conditions stays zeroed - an entry with no conditions always applies,
+		// which is what we want and what a great many vanilla perks already are.
+		//
+		// VR: 0x100 is the SE/AE index. Actor.h declares ForEachPerkEntry as
+		// SKYRIM_REL_VR_VIRTUAL, so a VR build needs the index resolved per
+		// runtime before this can ship.
+		// -------------------------------------------------------------------
+		// The entry starts neutral. E1 used a fixed 2.0 to prove the number could
+		// be written at all; E2 drives it from the channel instead, so the value
+		// here only ever applies before the first read, and 1.0 changes nothing.
+		constexpr float kNeutralMultiplier = 1.0f;
+
+		// BGSEntryPointPerkEntry::EntryData::numArgs is NOT an argument count,
+		// whatever the CommonLib field name suggests. In the PERK record it is
+		// the third byte of DATA, which the record format calls the perk
+		// condition tab count - how many condition tabs the entry carries.
+		//
+		// E1c declared 3 with a null conditions array and the engine walked into
+		// the first of three tabs that were not there: access violation reading
+		// address 0, inside condition evaluation, reached straight from our
+		// visit. The field has to agree with the array, always. E1d therefore
+		// declares 0 and carries none, and CheckConsistency below refuses to
+		// hand the engine an entry where the two disagree.
+		constexpr std::uint8_t kNoConditionTabs = 0;
+
+		alignas(RE::BGSEntryPointPerkEntry) std::byte            g_syntheticEntryStorage[sizeof(RE::BGSEntryPointPerkEntry)]{};
+		alignas(RE::BGSEntryPointFunctionDataOneValue) std::byte g_syntheticDataStorage[sizeof(RE::BGSEntryPointFunctionDataOneValue)]{};
+
+		RE::BGSEntryPointPerkEntry*            g_syntheticEntry{ nullptr };
+		RE::BGSEntryPointFunctionDataOneValue* g_syntheticData{ nullptr };
+
+		EffectType g_actorTypes[] = {
+			{ RE::VTABLE_Character[0] },
+			{ RE::VTABLE_PlayerCharacter[0] },
+		};
+
+		EffectType g_perkEntryTypes[] = {
+			{ RE::VTABLE_BGSEntryPointPerkEntry[0] },
+		};
+
+		// Hook: BGSEntryPointPerkEntry::CheckConditionFilters - vfunc 0x00
+		//
+		// E1 spent four runs trying to build an entry the engine would accept on
+		// its own, and the results only make sense one way:
+		//
+		//   E1   0 tabs, no conditions  -> discarded, no crash
+		//   E1b  3 tabs, real ones      -> applied, but fire only
+		//   E1c  3 tabs, null array     -> access violation walking the array
+		//   E1d  0 tabs, no conditions  -> discarded again
+		//
+		// Zero condition tabs does not mean "always passes". It means no tab
+		// matched, and the engine reads that as a failure. There was never a
+		// field to get right: an entry carrying no conditions cannot pass this
+		// check, so a synthetic one has to be answered for here. That is what
+		// Perk Entry Point Extender does at this same vfunc, and reading its
+		// source is what ended the guessing.
+		//
+		// The swap is global - every entry point perk entry in the load order
+		// now routes its condition check through this thunk - so the body is a
+		// pointer compare and a tail call, and anything that is not ours reaches
+		// the engine's own implementation untouched.
+		bool CheckConditionFiltersThunk(RE::BGSEntryPointPerkEntry* a_this, std::uint32_t a_numArgs, void* a_args)
+		{
+			const auto vtable   = a_this ? *reinterpret_cast<std::uintptr_t*>(a_this) : 0;
+			const auto original = FindOriginalIn(g_perkEntryTypes, std::size(g_perkEntryTypes), vtable);
+			if (!original) {
+				return false;
+			}
+
+			if (a_this && a_this == g_syntheticEntry) {
+				return true;
+			}
+
+			return reinterpret_cast<decltype(&CheckConditionFiltersThunk)>(original)(a_this, a_numArgs, a_args);
+		}
+
+		// E1 built this entry field by field and the engine discarded it: the
+		// visitor took 5774 calls without complaint and no number moved. That
+		// rules out "the hook never fires" and leaves two possibilities, which
+		// no amount of re-reading the headers can separate -
+		//
+		//   (a) the entry is malformed in some field the headers do not spell
+		//       out, so the engine rejects it;
+		//   (b) contributing through the visitor does not feed the result at
+		//       all, and the whole approach is wrong.
+		//
+		// E1b separates them by measurement instead of by argument. It CLONES a
+		// real entry that the engine demonstrably honours - Augmented Flames,
+		// measured moving Firebolt 25 -> 31 - and swaps only the functionData
+		// pointer for our own. Every field we might have gotten wrong then comes
+		// from something known to work.
+		//
+		//   clone shows 50 -> injection is sound, our construction was wrong,
+		//                     and the field dump below says which field.
+		//   clone shows 25 -> the visitor is not the seam that feeds the result,
+		//                     and design D needs rethinking before any more of it
+		//                     gets built.
+		//
+		// The clone shares the original's conditions array and perk pointer. That
+		// is read-only for evaluation and this copy is never destructed, so
+		// nothing owned by the game is freed.
+		RE::BGSEntryPointPerkEntry* g_referenceEntry{ nullptr };
+
+		void DumpEntry(const char* a_label, RE::BGSEntryPointPerkEntry* a_entry)
+		{
+			if (!a_entry) {
+				spdlog::info("MagicScaling/E1b: {} - none.", a_label);
+				return;
+			}
+
+			// conditions is logged by SIZE and not only by pointer. E1b dumped
+			// the pointer alone, which is why the reference entry's numArgs=3
+			// sitting next to exactly 3 condition tabs went unnoticed, and the
+			// wrong field got the credit for that experiment working.
+			spdlog::info("MagicScaling/E1: {} vtable=0x{:016X} rank={} priority={} entryPoint={} function={} "
+						 "conditionTabs(numArgs)={} conditions.size()={} conditions=0x{:016X} "
+						 "functionData=0x{:016X} perk=0x{:016X}",
+				a_label,
+				*reinterpret_cast<std::uintptr_t*>(a_entry),
+				a_entry->header.rank,
+				a_entry->header.priority,
+				a_entry->entryData.entryPoint.underlying(),
+				a_entry->entryData.function.underlying(),
+				a_entry->entryData.numArgs,
+				a_entry->conditions.size(),
+				reinterpret_cast<std::uintptr_t>(a_entry->conditions.data()),
+				reinterpret_cast<std::uintptr_t>(a_entry->functionData),
+				reinterpret_cast<std::uintptr_t>(a_entry->perk));
+		}
+
+		// Augmented Flames rank 1 - the entry whose effect on the tooltip was
+		// measured directly. Any perk with a kModSpellMagnitude/kOneValue entry
+		// would do; this one is used because its behavior is already known.
+		constexpr RE::FormID kReferencePerkID = 0x000581E7;
+
+		RE::BGSEntryPointPerkEntry* FindReferenceEntry()
+		{
+			auto* handler = RE::TESDataHandler::GetSingleton();
+			if (!handler) {
+				return nullptr;
+			}
+
+			RE::BGSEntryPointPerkEntry* fallback = nullptr;
+
+			for (auto* perk : handler->GetFormArray<RE::BGSPerk>()) {
+				if (!perk) {
+					continue;
+				}
+
+				for (auto* entry : perk->perkEntries) {
+					if (!entry || entry->GetType() != RE::PERK_ENTRY_TYPE::kEntryPoint) {
+						continue;
+					}
+
+					auto* epEntry = static_cast<RE::BGSEntryPointPerkEntry*>(entry);
+					if (epEntry->entryData.entryPoint.get() != RE::BGSEntryPoint::ENTRY_POINT::kModSpellMagnitude) {
+						continue;
+					}
+
+					auto* fd = epEntry->functionData;
+					if (!fd || fd->GetType() != RE::BGSEntryPointFunctionData::FunctionType::kOneValue) {
+						continue;
+					}
+
+					if (perk->GetFormID() == kReferencePerkID) {
+						spdlog::info("MagicScaling/E1b: reference entry is '{}' (0x{:08X}), the measured one.",
+							perk->GetName() ? perk->GetName() : "<unnamed>", perk->GetFormID());
+						return epEntry;
+					}
+
+					if (!fallback) {
+						fallback = epEntry;
+						spdlog::info("MagicScaling/E1b: holding '{}' (0x{:08X}) as a fallback reference.",
+							perk->GetName() ? perk->GetName() : "<unnamed>", perk->GetFormID());
+					}
+				}
+			}
+
+			return fallback;
+		}
+
+		bool BuildSyntheticEntry()
+		{
+			REL::Relocation<std::uintptr_t> entryVtbl{ RE::VTABLE_BGSEntryPointPerkEntry[0] };
+			REL::Relocation<std::uintptr_t> dataVtbl{ RE::VTABLE_BGSEntryPointFunctionDataOneValue[0] };
+
+			auto* data = reinterpret_cast<RE::BGSEntryPointFunctionDataOneValue*>(g_syntheticDataStorage);
+			*reinterpret_cast<std::uintptr_t*>(data) = dataVtbl.address();
+			data->data                               = kNeutralMultiplier;
+			g_syntheticData                          = data;
+
+			// E1d - one variable moved from E1, which is the only honest way left
+			// to read the result. What each run actually carried:
+			//
+			//   E1    tabs=0  conditions=NULL  perk=NULL  -> discarded, no crash
+			//   E1b   tabs=3  conditions=real  perk=real  -> worked, fire only
+			//   E1c   tabs=3  conditions=NULL  perk=real  -> CRASH in condition eval
+			//
+			// E1 was internally consistent - zero tabs, zero conditions - so the
+			// tab count was never what got it discarded, and the conclusion drawn
+			// from E1b was wrong: that run changed three fields at once and the
+			// credit went to the wrong one. The only difference left between E1
+			// and a working entry is the null perk.
+			//
+			// So E1d is E1 with a borrowed perk and nothing else changed. It also
+			// happens to be the configuration the real design needs, since an
+			// entry with no conditions is one that applies to every spell rather
+			// than to fire.
+			std::memset(g_syntheticEntryStorage, 0, sizeof(g_syntheticEntryStorage));
+
+			auto* entry      = reinterpret_cast<RE::BGSEntryPointPerkEntry*>(g_syntheticEntryStorage);
+			g_referenceEntry = FindReferenceEntry();
+
+			*reinterpret_cast<std::uintptr_t*>(entry) = entryVtbl.address();
+			entry->header.rank                        = 0;
+			entry->header.priority                    = 0;
+			entry->entryData.entryPoint               = RE::BGSEntryPoint::ENTRY_POINT::kModSpellMagnitude;
+			entry->entryData.function                 = RE::BGSEntryPointPerkEntry::EntryData::Function::kMultiplyValue;
+			entry->entryData.numArgs                  = kNoConditionTabs;
+			entry->functionData                       = data;
+			entry->perk                               = g_referenceEntry ? g_referenceEntry->perk : nullptr;
+			// conditions stays null from the memset, and the tab count above
+			// agrees with it. Those two must move together - see the guard.
+
+			g_syntheticEntry = entry;
+
+			DumpEntry("REFERENCE (real, honoured by the engine)", g_referenceEntry);
+			DumpEntry("INJECTED  (E1d: no conditions, borrowed perk)", g_syntheticEntry);
+
+			// THE GUARD. E1c crashed the game because the tab count and the
+			// conditions array disagreed, and nothing checked. This is cheap,
+			// runs once, and refuses to hand the engine an entry that would send
+			// it walking off the end of an array that is not there. Returning
+			// false leaves the module exactly as it was without the hook.
+			const auto tabs       = static_cast<std::size_t>(entry->entryData.numArgs);
+			const auto conditions = entry->conditions.size();
+			if (tabs != conditions) {
+				spdlog::error("MagicScaling/E1d: REFUSING to install - the entry declares {} condition tab(s) but "
+							  "carries {}. The engine iterates the declared count, so this is the exact shape that "
+							  "caused an access violation in condition evaluation. Hook not installed.",
+					tabs, conditions);
+				g_syntheticEntry = nullptr;
+				return false;
+			}
+
+			if (!entry->perk) {
+				spdlog::warn("MagicScaling/E1d: no reference perk in the load order, so perk is null - that is the "
+							 "field under test, and this run cannot answer the question it was built to answer.");
+			}
+
+			return true;
+		}
+
+		void ForEachPerkEntryThunk(RE::Actor* a_this, RE::BGSEntryPoint::ENTRY_POINT a_entryType, RE::PerkEntryVisitor& a_visitor)
+		{
+			const auto vtable   = a_this ? *reinterpret_cast<std::uintptr_t*>(a_this) : 0;
+			const auto original = FindOriginalIn(g_actorTypes, std::size(g_actorTypes), vtable);
+			if (!original) {
+				return;
+			}
+
+			// Real perks first, ours after, so nothing the engine already had is
+			// displaced by this.
+			reinterpret_cast<decltype(&ForEachPerkEntryThunk)>(original)(a_this, a_entryType, a_visitor);
+
+			try {
+				if (a_entryType != RE::BGSEntryPoint::ENTRY_POINT::kModSpellMagnitude) {
+					return;
+				}
+
+				if (!g_syntheticEntry) {
+					return;
+				}
+
+				if (!a_this || !a_this->IsPlayerRef()) {
+					return;
+				}
+
+				// Inert with no consumer, same contract as every other hook here.
+				float mult = 0.0f, offset = 0.0f;
+				if (!g_magnitude.Read(mult, offset) || !g_syntheticData) {
+					return;
+				}
+
+				// STAGE E2 - THE QUESTION THIS STAGE EXISTS TO ANSWER.
+				//
+				// E1e proved the number in the spell menu can be written: a fixed
+				// 2.0 moved Firebolt to 50, Healing to 20 and Lightning Bolt to
+				// +80, across three schools. What it could NOT show is whether
+				// that number FOLLOWS a multiplier that changes during play,
+				// because the 2.0 never changed. The tooltip read the same at
+				// attribute 0 and 85, which is exactly the symptom the whole
+				// feature exists to fix.
+				//
+				// So the value stops being a constant here. It is read from the
+				// registered channel on every query, immediately before the entry
+				// is handed over, which is the same discipline Channel::Read
+				// follows everywhere else in this module - no caching, the global
+				// is the truth at the moment it is asked for.
+				//
+				// If the menu still shows the same number at two attribute values
+				// after this, the description is computed once and cached, and
+				// writing in the right place cannot help. That outcome ends this
+				// approach rather than extending it.
+				g_syntheticData->data = mult;
+
+				// The return value is captured because it is the only thing the
+				// engine tells us about the entry: kBreak here would mean the
+				// visitor is done, kContinue that it took ours and wants more.
+				// It is not proof either way, but it is free.
+				const auto result = a_visitor.Visit(g_syntheticEntry);
+
+				if (ShouldLogEvents()) {
+					// The offset half of the channel contract has no equivalent
+					// here: kMultiplyValue multiplies and nothing else. Consumers
+					// measured so far drive magnitude with offset 0, so this is
+					// logged rather than worked around - if one ever needs it, a
+					// second entry carrying kAddValue is the answer, and that is
+					// a design decision, not a silent approximation.
+					if (offset != 0.0f) {
+						spdlog::debug("MagicScaling/E2: channel offset {:.4f} is NOT applied at this seam - "
+									  "kMultiplyValue only multiplies.",
+							offset);
+					}
+
+					spdlog::debug("MagicScaling/E2: contributed kMultiplyValue {:.4f} from the live channel, "
+								  "visitor returned {}.",
+						mult,
+						result == RE::PerkEntryVisitor::ReturnType::kContinue ? "kContinue" : "kBreak");
+				}
+			} catch (...) {
+				// The original already ran, so the actor's real perks were
+				// visited either way.
 			}
 		}
 
@@ -463,6 +865,29 @@ namespace Lodestone::Core::MagicScaling
 		} catch (...) {
 			spdlog::error("MagicScaling: failed to install the magnitude hooks (unknown exception) - "
 						  "magnitude and duration will not be scaled.");
+		}
+
+		// STAGE E1 - installed last, after the two channels that already work, so
+		// a failure building the synthetic entry cannot stop them from going in.
+		try {
+			if (BuildSyntheticEntry()) {
+				// Condition answer first: from the moment the actor hook is live
+				// the engine can ask our entry whether its conditions pass, and
+				// the answer has to already be in place.
+				InstallVfunc(g_perkEntryTypes, std::size(g_perkEntryTypes), 0x00, reinterpret_cast<void*>(&CheckConditionFiltersThunk));
+				InstallVfunc(g_actorTypes, std::size(g_actorTypes), 0x100, reinterpret_cast<void*>(&ForEachPerkEntryThunk));
+
+				spdlog::info("MagicScaling: STAGE E2 installed - CheckConditionFilters @0x00 on the entry point perk "
+							 "entry vtable, Actor::ForEachPerkEntry @0x100 on {} actor vtables. The contributed "
+							 "kModSpellMagnitude entry now carries the REGISTERED CHANNEL's multiplier, read fresh on "
+							 "every query. AdjustForPerks still scales as well, so the two compound for now - that is "
+							 "expected at this stage and is what E3 removes.",
+					std::size(g_actorTypes));
+			}
+		} catch (const std::exception& e) {
+			spdlog::error("MagicScaling: stage E1 failed to install: {} - the spell menu seam is not hooked.", e.what());
+		} catch (...) {
+			spdlog::error("MagicScaling: stage E1 failed to install (unknown exception) - the spell menu seam is not hooked.");
 		}
 
 		try {
