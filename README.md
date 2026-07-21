@@ -1,6 +1,6 @@
 # Lodestone
 
-**A shared SKSE framework for the Matters mods.**
+**A shared SKSE framework for Skyrim SE mods.**
 
 Lodestone provides low-level native infrastructure to Skyrim mods that would otherwise each ship their own DLL: engine hooks a mod can drive from Papyrus at runtime, and a version gate. It is a dependency, not a gameplay mod.
 
@@ -12,9 +12,7 @@ It is built on [CommonLibSSE-NG](https://github.com/CharmedBaryon/CommonLibSSE-N
 
 ## Status
 
-**Pre-release.** Not yet published on Nexus.
-
-Lodestone was extracted from the Intelligence Matters SKSE plugin, which is its first consumer. The API is small and will grow. Until the first Nexus release, treat everything here as unstable.
+Lodestone was extracted from the Intelligence Matters SKSE plugin, which is its first consumer. As of this release, Intelligence Matters has completed its migration and drives all four gameplay modules directly (Cast Time, Book Framework, Spell Tomes, Magic Scaling). Every channel has been validated end to end in game, including reload behavior for the session-scoped ones. The API is small and will keep growing as more consumers arrive; the versioning contract below exists for that reason.
 
 Currently implemented. Every module is Core - it never knows a consumer by name. The Domain layer described in CONVENTIONS exists but is currently empty.
 
@@ -40,7 +38,7 @@ That default exists because Lodestone is a modder resource, not a mod. Anything 
 
 ## Using Lodestone from Papyrus
 
-Lodestone is not bundled inside consuming mods, ever. It ships as its own download, and consumers list it as a requirement. Two mods bundling different versions of the same DLL means the Mod Organizer overwrite order silently decides which one wins, and the loser breaks with no legible symptom.
+The Lodestone was not designed to be bundled in consumer mods, but you can do so. It ships as its own download, and consumers list it as a requirement. Please note, two mods bundling different versions of the same DLL means the Mod Organizer overwrite order silently decides which one wins, and the loser breaks with no legible symptom. Therefore, it is advisable to reference it, though it is not mandatory.
 
 ### The version gate
 
