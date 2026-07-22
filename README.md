@@ -4,7 +4,7 @@
 
 Lodestone provides low-level native infrastructure to Skyrim mods that would otherwise each ship their own DLL: engine hooks a mod can drive from Papyrus at runtime, and a version gate. It is a dependency, not a gameplay mod.
 
-Installed on its own it does almost nothing - every module is passthrough until a consumer registers something with it. The one exception is spell tomes, which stop teaching and stop being eaten from the moment the plugin is installed; see the table below.
+Installed on its own it does nothing - every module is passthrough until a consumer registers something with it.
 
 It is built on [CommonLibSSE-NG](https://github.com/CharmedBaryon/CommonLibSSE-NG), so a single DLL covers Skyrim SE, AE and VR.
 
@@ -21,16 +21,16 @@ Currently implemented. Every module is Core - it never knows a consumer by name.
 | PluginInfo | 1.0.0 | `GetVersion()`, `GetVersionString()` |
 | CastTime | 1.1.0 | `RegisterCastTimeChannel()` |
 | BookFramework | 1.2.0 | `SetBookText()`, `AppendBookText()`, `ClearBookText()`, `GetBookText()` |
-| SpellTomes | 1.3.0 (behavior changed in 1.5.0; alias registration added in 1.6.0) | `RegisterForSpellTomeRead()`, `UnregisterForSpellTomeRead()`, `RegisterForSpellTomeReadAlias()`, `UnregisterForSpellTomeReadAlias()`, `ConsumeSpellTome()`, event `OnSpellTomeRead` |
+| SpellTomes | 1.3.0 (behavior changed in 1.5.0; alias registration added in 1.6.0; suppression gated on registration in 1.8.0) | `RegisterForSpellTomeRead()`, `UnregisterForSpellTomeRead()`, `RegisterForSpellTomeReadAlias()`, `UnregisterForSpellTomeReadAlias()`, `ConsumeSpellTome()`, event `OnSpellTomeRead` |
 | MagicScaling | 1.4.0 (magnitude moved to the perk entry seam in 1.7.0 - now shows in the spell menu, and no longer touches enchantments, food or potions) | `RegisterMagicMagnitudeChannel()`, `RegisterMagicDurationChannel()`, `RegisterMagicCostChannel()` |
 
 All functions are global natives on the `Lodestone` script, so they are called as `Lodestone.GetVersion()`. Full signatures and per-function notes are in `Lodestone.psc`, which is the authoritative reference - a consumer copies that file into its own scripts.
 
-**Spell tomes are the one module that changes the game on its own.** With Lodestone installed, reading a spell tome does nothing: the spell is not taught and the book is not consumed. The book is flagged as read, since the player did open it, and that is all.
+**Spell tomes follow the same contract as everything else since 1.8.0.** With no consumer registered, the module is pure passthrough: tomes teach their spell and are eaten exactly as in vanilla. Once a consumer registers for `OnSpellTomeRead`, reading a spell tome does nothing on its own: the spell is not taught and the book is not consumed. The book is flagged as read, since the player did open it, and that is all. The consumer then decides everything: it teaches with plain Papyrus `AddSpell` when its own system says the spell is earned, and eats the book with `ConsumeSpellTome()` if and when it should be spent. Calling both immediately in the handler reproduces vanilla exactly.
 
-The capability is inverted compared to the others. Suppression is unconditional - it does not wait for a registration, and registering only adds the `OnSpellTomeRead` notification on top of it. A consumer then decides everything: it teaches with plain Papyrus `AddSpell` when its own system says the spell is earned, and eats the book with `ConsumeSpellTome()` if and when it should be spent. Calling both immediately in the handler reproduces vanilla exactly.
+Registration order matters, as with every channel: register before the first tome read you want intercepted, and re-register on every game load. A tome read before the registration lands is vanilla - spell learned, book consumed - and is not reverted afterwards.
 
-That default exists because Lodestone is a modder resource, not a mod. Anything hooking tome reading needs the vanilla instant-learn gone before its own study or gating system can exist, so an opt-in default would only mean every consumer's first act is undoing it. Every other module does nothing at all until a consumer registers with it.
+(From 1.5.0 to 1.7.0 the suppression was unconditional - installing the DLL alone stopped every spell tome from working. That was retired in 1.8.0: it broke vanilla tomes for anyone whose load order carries Lodestone as a mere dependency, and collided with other mods on the same seam. A consumer that relied on it must register, gated on `GetVersion() >= 1008000`.)
 
 > **Changed in 1.5.0.** Through 1.4.0 the module kept the book but still let the spell be learned on read. A consumer written against that behavior must now teach the spell itself; gate on `Lodestone.GetVersion() >= 1005000`.
 

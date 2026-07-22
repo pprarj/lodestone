@@ -83,14 +83,28 @@ Bool Function ClearBookText(Book akBook) global native
 ; Returns "" on a None book, or the VM default "" if the DLL is absent.
 String Function GetBookText(Book akBook) global native
 
-; --- SpellTomes (added in DLL 1.3.0, full interception since 1.5.0) --------
+; --- SpellTomes (added in DLL 1.3.0, full interception since 1.5.0, ---------
+; --- suppression gated on registration since 1.8.0) ------------------------
 
-; With the DLL installed, reading a spell tome does NOTHING on its own: the
-; spell is not learned and the book is not consumed. The book is flagged as
-; read, because the player did open it, and that is all that happens.
+; Once at least one receiver is registered, reading a spell tome does NOTHING
+; on its own: the spell is not learned and the book is not consumed. The book
+; is flagged as read, because the player did open it, and that is all that
+; happens. With NO receiver registered the module is pure passthrough: tomes
+; teach their spell and are eaten exactly as in vanilla, as if the DLL were
+; not installed.
 ;
-; This is unconditional - it does not wait for anyone to register. Registering
-; only adds the notification. To be told when a tome is read, register the form
+; ORDERING - same requirement as RegisterCastTimeChannel: register BEFORE the
+; first tome read you want intercepted, and re-register on every game load
+; (registration is session-scoped). A tome read before your registration lands
+; is vanilla - spell learned, book consumed - and is NOT reverted afterwards.
+;
+; CHANGED IN 1.8.0: from 1.5.0 to 1.7.0 the suppression was unconditional -
+; installing the DLL alone stopped every spell tome from working. If your
+; script relied on suppression happening without any registration, it must now
+; register (and it should have anyway, to be told about the read). Gate on
+; Lodestone.GetVersion() >= 1008000.
+;
+; To be told when a tome is read, register the form
 ; or the alias whose script implements OnSpellTomeRead - RegisterForSpellTomeRead
 ; for a form, RegisterForSpellTomeReadAlias for an alias script - and then decide
 ; everything yourself:

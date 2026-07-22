@@ -2,10 +2,12 @@
 // Lodestone - Shared SKSE framework
 //
 // Module: SpellTomes (Core)
-// Owns spell-tome interception. Reading a spell tome grants NOTHING: the spell is
-// not taught and the book is not consumed. The read is reported to any registered
-// consumer, which decides on its own terms whether the spell is ever learned and
-// whether the book is ever eaten.
+// Owns spell-tome interception. Once a consumer has registered, reading a spell
+// tome grants NOTHING: the spell is not taught and the book is not consumed. The
+// read is reported to the registered consumers, which decide on their own terms
+// whether the spell is ever learned and whether the book is ever eaten. With no
+// consumer registered the module is pure passthrough - tomes teach and are eaten
+// exactly as in vanilla.
 //
 // SCOPE, WIDENED IN 1.5.0. Through 1.4.0 this module only stopped the book from
 // being eaten and deliberately did not touch LEARNING. That turned out to be half
@@ -15,20 +17,30 @@
 // left to gate. Suppressing the learn is therefore part of the job, not a policy
 // choice - what to do INSTEAD of learning stays entirely with the consumer.
 //
-// BEHAVIOR ON INSTALL: reading a spell tome does not teach and does not consume.
-// This is an intentional change to vanilla on install, not a passthrough, and it
-// applies whether or not anyone has registered - a registration adds the event,
-// it does not switch the suppression on. Lodestone is a modder resource; a mod
-// that hooks tome reading needs the vanilla instant-learn gone before its own
-// system can exist, so there is no audience an opt-in default would have served.
+// BEHAVIOR ON INSTALL, CHANGED IN 1.8.0: passthrough. The hook is installed
+// always, but until a consumer registers, every book - spell tome included -
+// takes the original path untouched, identical to the DLL not being installed.
+// The first registration is what switches the suppression on. (From 1.5.0 to
+// 1.7.0 suppression was unconditional, an intentional exception to "passive
+// until asked"; the exception and why it was retired are recorded at Install()
+// in SpellTomes.cpp.)
 //
-// The read still counts as a read: the book is flagged kHasBeenRead, because the
-// player did open it. Only learning and consumption are suppressed. See the thunk
-// in SpellTomes.cpp for why that one side effect is restored by hand and the
-// others are not.
+// ORDERING REQUIREMENT (the consumer must honor this): registration must land
+// BEFORE the first tome read the consumer wants intercepted. The consumer
+// registers early - a load/init event or an init quest, and again on every game
+// load, since registration is session-scoped. A tome read before the first
+// registration passes as vanilla (the spell is learned, the book is consumed)
+// and is NOT reverted when a registration lands later. This is the same silent
+// degradation the other modules already accept: "not registered yet" is
+// indistinguishable from "not installed".
 //
-// Skill books, notes and ordinary books are passed through untouched, including
-// the engine's own decision about consuming them.
+// With a registrant, the read still counts as a read: the book is flagged
+// kHasBeenRead, because the player did open it. Only learning and consumption
+// are suppressed. See the thunk in SpellTomes.cpp for why that one side effect
+// is restored by hand and the others are not.
+//
+// Skill books, notes and ordinary books are passed through untouched either way,
+// including the engine's own decision about consuming them.
 //
 // PUBLIC API (declared in Lodestone.psc, "Lodestone" script):
 //
@@ -54,11 +66,15 @@
 //
 // HOW IT WORKS:
 //   The read is TESObjectBOOK::Read, which teaches the spell and returns whether
-//   the book should be consumed. This module hooks it and, for a spell tome, does
-//   not call the original at all - that is the only way to suppress a teach the
-//   original performs itself. It flags the book read, returns FALSE so the caller
-//   keeps it, and dispatches OnSpellTomeRead. Every other book type calls the
-//   original and returns its answer unchanged.
+//   the book should be consumed. This module hooks it. With no registrant the
+//   thunk calls the original and returns its answer, for every book. With at
+//   least one registrant, a spell tome does not call the original at all - that
+//   is the only way to suppress a teach the original performs itself. It flags
+//   the book read, returns FALSE so the caller keeps it, and dispatches
+//   OnSpellTomeRead. Every other book type calls the original and returns its
+//   answer unchanged. "Is anyone registered" is a count kept by the module
+//   itself, updated inside Register/Unregister under the set's own lock -
+//   RegistrationSet does not expose emptiness.
 //
 //   The address (RELOCATION_ID(17439, 17842)) is not in the installed headers; it
 //   came from the CommonLibSSE-NG source and was proven in game, along with the

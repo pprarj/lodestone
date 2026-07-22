@@ -16,20 +16,25 @@
 // grants nothing on its own. The consumer teaches with its own AddSpell, when its
 // own system says so, and eats the book with ConsumeSpellTome if it wants to.
 //
-// This is not a "default" that a consumer opts out of - it is what the module is
-// for. Lodestone is a modder resource: nobody installs it to play with, and a mod
-// that hooks tome reading needs the vanilla instant-learn gone before its own
-// system can exist. Leaving the learn on until someone registers would mean the
-// first thing every consumer does is fight the framework it depends on.
+// WHAT CHANGED IN 1.8.0. Suppression now waits for a consumer. 1.5.0 suppressed
+// unconditionally: install the DLL and every spell tome stopped teaching and
+// stopped being eaten, with no consumer involved. That held while this code only
+// ever loaded next to the one mod that wanted the suppression; it stopped holding
+// when the first consumer's core began requiring Lodestone for every user, so
+// every install - whether or not anything ever registers for tome reads - had
+// vanilla tomes broken, and collided with any other mod on this seam. The module
+// now follows the same contract as the other three (CastTime, BookFramework,
+// MagicScaling): hook installed always, real passthrough until someone registers.
 //
-// So both paths suppress, and the ONLY difference a registration makes is whether
-// OnSpellTomeRead is dispatched:
+// So the FIRST question the thunk asks is whether anyone has registered:
 //
-//   spell tome        -> never call the original. No learn, no vanilla message,
+//   nobody registered -> call the original and return its answer, for EVERY
+//                        book, tome or not. No flag set, no event queued.
+//                        Identical to the DLL not being installed.
+//   registered, tome  -> never call the original. No learn, no vanilla message,
 //                        return false so the caller keeps the book. Mark the book
-//                        read (see the thunk). Dispatch OnSpellTomeRead to whoever
-//                        registered, if anyone did.
-//   any other book    -> call the original, return what it returned. Skill books
+//                        read (see the thunk). Dispatch OnSpellTomeRead.
+//   registered, other -> call the original, return what it returned. Skill books
 //                        and ordinary books are not this module's business.
 //
 // EXCEPTION SAFETY: a C++ exception escaping a hook into the engine is undefined
@@ -40,6 +45,8 @@
 // Phase L2 - Stage C.3
 
 #include "SpellTomes.h"
+
+#include <atomic>
 
 #include <safetyhook.hpp>
 
@@ -54,10 +61,66 @@ namespace Lodestone::Core::SpellTomes
 		// re-registers after load (the runtime model the other modules use). The
 		// set has its own lock, so the natives and the hook can touch it safely.
 		//
-		// The hook does NOT ask whether anyone is registered. Suppression happens
-		// either way, so the answer would not change a decision - dispatching to an
-		// empty set is already a no-op.
-		SKSE::RegistrationSet<RE::TESObjectBOOK*, RE::TESObjectREFR*> g_readReg{ "OnSpellTomeRead" };
+		// Since 1.8.0 the hook DOES ask whether anyone is registered: an empty set
+		// means passthrough, so emptiness became a decision input, not just a no-op
+		// dispatch. RegistrationSetBase does not expose it (verified against the
+		// installed 3.5.3 source, the same pinned tree the linked lib was built
+		// from: no empty()/size(), _handles and _lock are protected). Rather than
+		// reach into the internal set, this subclass keeps its own count next to
+		// it: +1 only when Register reports a genuine insertion, -1 only when
+		// Unregister reports a genuine removal - the 3.5.3 source returns exactly
+		// that (insert().second / found-and-erased), so duplicates and failed
+		// handles never move the count. Both updates happen under the set's own
+		// _lock (a recursive_mutex, so holding it around the base call is safe),
+		// keeping count and set in step. The count itself is atomic so the hook
+		// reads it without touching the lock.
+		class CountedRegistrationSet : public SKSE::RegistrationSet<RE::TESObjectBOOK*, RE::TESObjectREFR*>
+		{
+		public:
+			using super = SKSE::RegistrationSet<RE::TESObjectBOOK*, RE::TESObjectREFR*>;
+
+			explicit CountedRegistrationSet(const std::string_view& a_eventName) :
+				super(a_eventName)
+			{}
+
+			// T is RE::TESForm or RE::BGSBaseAlias - the template forwards to the
+			// matching base overload, so the natives below keep calling
+			// Register/Unregister exactly as before.
+			template <class T>
+			bool Register(const T* a_object)
+			{
+				Locker locker(_lock);
+				const bool added = super::Register(a_object);
+				if (added) {
+					_count.fetch_add(1, std::memory_order_release);
+				}
+				return added;
+			}
+
+			template <class T>
+			bool Unregister(const T* a_object)
+			{
+				Locker locker(_lock);
+				const bool removed = super::Unregister(a_object);
+				if (removed) {
+					_count.fetch_sub(1, std::memory_order_release);
+				}
+				return removed;
+			}
+
+			// One atomic load - what the hook calls on every book read. A
+			// registration landing mid-read costs at most one extra passthrough,
+			// the same benign race the CastTime hook accepts for its channel.
+			bool HasRegistrants() const
+			{
+				return _count.load(std::memory_order_acquire) > 0;
+			}
+
+		private:
+			std::atomic<std::size_t> _count{ 0 };
+		};
+
+		CountedRegistrationSet g_readReg{ "OnSpellTomeRead" };
 
 		// debug: per-event lines are absent from a Release build, since Log.cpp
 		// caps the level at info when NDEBUG is defined. The guard is not
@@ -78,6 +141,19 @@ namespace Lodestone::Core::SpellTomes
 		// The original teaches the spell (or skill) and returns whether the book
 		// should be consumed. Non-tome books are always passed through with the
 		// original's own return value; this module has no opinion about them.
+		//
+		// Since 1.8.0 the tome behavior below only engages once a consumer has
+		// registered. Before that, the thunk's first test fails and EVERY book -
+		// tome included - takes the passthrough, identical to vanilla. The rest
+		// of this block describes the registered path, which is unchanged.
+		//
+		// ORDERING (the same requirement the CastTime channel documents): a
+		// consumer must register BEFORE the first tome read it cares about. A
+		// tome read before the first registration passes through as vanilla -
+		// the spell is learned, the book is consumed - and neither is reverted
+		// when a registration lands later. This is the same silent degradation
+		// the other modules already accept: "not registered yet" reads
+		// identically to "not installed".
 		//
 		// WHY THIS THUNK DOES NOT CALL THE ORIGINAL ON THE TOME PATH. The house rule
 		// (CONVENTIONS, "The original runs first") is the right rule for a hook that
@@ -121,10 +197,13 @@ namespace Lodestone::Core::SpellTomes
 		// described below, and it is the reason this particular observation is
 		// worth trusting.
 		//
-		// STILL UNOBSERVED, so do not read this block as covering it: the event
-		// actually arriving at a registered consumer (none exists yet - it lands
-		// with the first consumer's migration), and the passthrough path for skill
-		// books and ordinary books.
+		// STILL UNOBSERVED, so do not read this block as covering it: the
+		// no-registrant passthrough added in 1.8.0 (a tome read with nothing
+		// registered teaching and consuming as vanilla) - it is the new manual
+		// test for this change and must be proven in game, together with a
+		// re-run of the registered path above to show it did not move - and the
+		// registered-path passthrough for skill books and ordinary books, which
+		// has never been watched under a registrant.
 		//
 		// Nothing per-read appears in a Release log: those lines are spdlog::debug
 		// and Log.cpp caps the level at info under NDEBUG. Their absence during a
@@ -153,6 +232,15 @@ namespace Lodestone::Core::SpellTomes
 		{
 			static bool thunk(RE::TESObjectBOOK* a_this, RE::TESObjectREFR* a_reader)
 			{
+				// 0. Anyone registered? One atomic load, the cheapest test first.
+				//    With no consumer this module has no business here at all:
+				//    every book - tome or not - takes the original untouched, no
+				//    flag set, no event queued. Identical to the DLL not being
+				//    installed.
+				if (!g_readReg.HasRegistrants()) {
+					return g_readHook.call<bool, RE::TESObjectBOOK*, RE::TESObjectREFR*>(a_this, a_reader);
+				}
+
 				// TeachesSpell reads one flag on the book, so this is cheap enough
 				// to run before deciding anything.
 				const bool isTome = [a_this]() {
@@ -205,6 +293,8 @@ namespace Lodestone::Core::SpellTomes
 
 		// Lodestone.RegisterForSpellTomeRead(Form) -> Bool
 		// Registers a form whose script implements OnSpellTomeRead(Book, ObjectReference).
+		// The first registration is also what arms the suppression (1.8.0) - see
+		// the ordering note at the thunk: register before the first relevant read.
 		bool RegisterForSpellTomeRead(RE::StaticFunctionTag*, RE::TESForm* a_receiver)
 		{
 			if (!a_receiver) {
@@ -291,28 +381,34 @@ namespace Lodestone::Core::SpellTomes
 	}
 
 	// -----------------------------------------------------------------------
-	// THE ONE DELIBERATE EXCEPTION TO "PASSIVE UNTIL ASKED"
+	// THE EXCEPTION THAT WAS HERE, AND WHY IT IS GONE (1.8.0)
 	//
-	// Every other module in this plugin is inert until a consumer registers
-	// something: install it with nothing else and the game behaves exactly as it
-	// did before. This module does not follow that rule, and the difference is
-	// intentional rather than an oversight.
+	// From 1.5.0 to 1.7.0 this block declared "the one deliberate exception to
+	// passive until asked": suppression was unconditional, with no consumer
+	// involved, and a registration only added the event on top. The argument was
+	// that Lodestone is a modder resource - nobody installs it to play with, so a
+	// mod hooking tome reading would want the vanilla instant-learn gone before
+	// its own system could exist, and there was nobody a conservative default
+	// would have protected.
 	//
-	// Installing it stops spell tomes from being consumed AND from teaching their
-	// spell, with no consumer involved. The capability is inverted compared to the
-	// rest: suppression is unconditional, and a consumer adds behavior back on top
-	// of it - AddSpell when its own system decides the spell is earned,
-	// ConsumeSpellTome when it decides the book is spent.
+	// That argument had a hidden premise: that this DLL only ever loads next to a
+	// consumer that wants the suppression. The premise died when the first
+	// consumer's core started requiring Lodestone for every user. From then on,
+	// everyone with that mod had this DLL in the load order - including users who
+	// never enable anything that registers for tome reads - and for them the
+	// exception meant vanilla spell tomes silently stopped teaching and stopped
+	// being eaten, and any other mod driving this same seam was broken for free.
 	//
-	// Making it opt-in was considered and rejected. Lodestone is a modder resource;
-	// nothing installs it to be played with. A mod that hooks tome reading needs
-	// the vanilla instant-learn gone before its own study or gating system can
-	// exist at all, so an opt-in default would mean the first thing every consumer
-	// does is undo the framework's default. There is nobody the conservative
-	// default would have protected.
+	// So the exception is gone and the module follows the general rule, the same
+	// contract as the other three: the hook is installed always, but until a
+	// consumer registers via RegisterForSpellTomeRead(Alias), the thunk calls
+	// the original and returns its answer, for every book. The suppress path and
+	// everything validated about it in 1.5.0/1.6.0 is intact - it just waits to
+	// be asked, like everything else in this plugin.
 	//
-	// Recorded here because it is the sort of thing that reads like a bug to
-	// whoever finds it next - including the author, months from now.
+	// The corollary a consumer must know: registration has to land BEFORE the
+	// first tome read it wants intercepted. A read before that is vanilla and is
+	// not reverted. See the ordering note at the thunk.
 	// -----------------------------------------------------------------------
 	void Install()
 	{
@@ -349,8 +445,8 @@ namespace Lodestone::Core::SpellTomes
 			}
 
 			spdlog::info("SpellTomes: hook installed on TESObjectBOOK::Read. "
-						 "Spell tomes are neither learned nor consumed on read; "
-						 "a registered consumer owns AddSpell and ConsumeSpellTome.");
+						 "No consumer registered yet - passthrough (vanilla tome behavior) until "
+						 "a consumer calls Lodestone.RegisterForSpellTomeRead.");
 		} catch (const std::exception& e) {
 			spdlog::error("SpellTomes: failed to install: {} - spell-tome behavior unchanged.", e.what());
 		} catch (...) {
