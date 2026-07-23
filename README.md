@@ -6,7 +6,7 @@ Lodestone provides low-level native infrastructure to Skyrim mods that would oth
 
 Installed on its own it does nothing - every module is passthrough until a consumer registers something with it.
 
-It is built on [CommonLibSSE-NG](https://github.com/CharmedBaryon/CommonLibSSE-NG), so a single DLL covers Skyrim SE, AE and VR.
+It is built on [CommonLibSSE-NG](https://github.com/alandtse/CommonLibVR/tree/ng), so a single DLL covers Skyrim SE, AE and VR.
 
 ---
 
@@ -106,7 +106,11 @@ Requirements:
 - CMake 3.21+
 - [vcpkg](https://github.com/microsoft/vcpkg), with `VCPKG_ROOT` set
 
-Dependencies resolve through the Color-Glass Studios vcpkg registry, configured in `vcpkg-configuration.json`. There is no submodule to initialize.
+CommonLibSSE-NG comes from a git submodule pinned to a release tag; vcpkg covers the transitive dependencies. On a fresh clone, initialize the submodules first:
+
+```
+git submodule update --init --recursive
+```
 
 ```
 cmake --preset <preset>
@@ -133,10 +137,9 @@ The one thing worth knowing up front: this codebase documents *why*, with eviden
 
 ## Credits
 
-- **[CommonLibSSE-NG](https://github.com/CharmedBaryon/CommonLibSSE-NG)** by CharmedBaryon, a fork of CommonLibSSE by Ryan-rsm-McKenzie and powerof3. MIT licensed.
+- **[CommonLibSSE-NG](https://github.com/alandtse/CommonLibVR/tree/ng)**, the `ng` branch maintained by alandtse - continuing the NG line by CharmedBaryon, itself a fork of CommonLibSSE by Ryan-rsm-McKenzie and powerof3. MIT licensed.
 - **[SKSE](https://skse.silverlock.org/)** by Ian Patterson, Stephen Abel and the SKSE team.
 - **[spdlog](https://github.com/gabime/spdlog)** by Gabi Melman. MIT licensed.
-- The Color-Glass Studios vcpkg registry, which makes the above consumable without submodules.
 
 AI assistance was used during development to speed up the work. Every line here is reviewed and owned by the author, and the reasoning behind the non-obvious parts is documented in the source where you can check it.
 

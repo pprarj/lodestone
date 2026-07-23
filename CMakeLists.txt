@@ -15,7 +15,7 @@ cmake_minimum_required(VERSION 3.21)
 # DLL version - INDEPENDENT of the mod version on Nexus.
 project(
     Lodestone
-    VERSION 1.8.0
+    VERSION 1.8.1
     LANGUAGES CXX
 )
 
@@ -34,8 +34,26 @@ configure_file(
     @ONLY
 )
 
-# Resolved via the vcpkg port (colorglass registry, see vcpkg-configuration.json).
-find_package(CommonLibSSE CONFIG REQUIRED)
+# CommonLibSSE-NG comes from the git submodule at extern/commonlibsse-ng
+# (alandtse/CommonLibVR, branch ng, pinned to a release tag).
+#
+# It used to be resolved via find_package against the colorglass vcpkg registry,
+# pinned at 3.5.3 - the CharmedBaryon line, abandoned upstream (its successor's
+# README declares that vcpkg port unmaintained). The alandtse fork has no vcpkg
+# port; the path its README documents is a git submodule plus vcpkg for the
+# transitive dependencies (spdlog, directxtk, rapidcsv - see vcpkg.json), which
+# is what this does. Consumption pattern follows the pinned tag's own
+# test_consumer/CMakeLists.txt.
+#
+# BUILD_TESTS is the submodule's option (default ON); its tests need catch2 and
+# are not ours to run, so force it off before add_subdirectory sees the option.
+set(BUILD_TESTS OFF CACHE BOOL "Disable CommonLibSSE-NG tests in consumer" FORCE)
+add_subdirectory(extern/commonlibsse-ng EXCLUDE_FROM_ALL)
+
+# add_commonlibsse_plugin lives in this file. The submodule's source-build path
+# does not include it itself (only its prebuilt path does), so the consumer
+# includes it explicitly after add_subdirectory.
+include(extern/commonlibsse-ng/cmake/CommonLibSSE.cmake)
 
 # SafetyHook - inline detours for NON-VIRTUAL engine functions.
 #

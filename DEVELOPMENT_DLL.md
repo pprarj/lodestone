@@ -12,9 +12,20 @@ repositorio e a raiz do projeto CMake.
 
 ## Integracao do CommonLibSSE-NG
 
-Via porta vcpkg (registry colorglass), declarada em `vcpkg-configuration.json`.
-CommonLib entra como dependencia em `vcpkg.json`. Nao ha fonte de terceiros
-commitada na arvore. Reprodutibilidade vem do baseline fixado no registry.
+Via git submodule em `extern/commonlibsse-ng` (alandtse/CommonLibVR, branch ng,
+pinado em tag de release). O vcpkg cobre so as dependencias transitivas
+(spdlog, directxtk, rapidcsv), declaradas em `vcpkg.json`. Nao ha fonte de
+terceiros commitada na arvore - o que entra no historico e o ponteiro SHA do
+submodule. Reprodutibilidade vem do tag pinado + builtin-baseline fixado.
+
+No primeiro clone (ou se `extern/commonlibsse-ng` estiver vazio), inicializar
+os submodules antes de configurar:
+
+    git submodule update --init --recursive
+
+Historico: ate a v1.8.0 o CommonLib vinha da porta vcpkg do registry
+colorglass, pinada em 3.5.3 (linha CharmedBaryon, abandonada). A migracao para
+a fork do alandtse esta registrada no resumo da fase de migracao da CommonLib.
 
 ## Primeiro build
 
@@ -22,8 +33,7 @@ Rodar no "Developer Command Prompt for VS 2022" (traz o cmake no PATH).
 Todos os comandos a partir da raiz do repositorio.
 
 O baseline do registry default (microsoft/vcpkg) esta fixado em
-`builtin-baseline` no `vcpkg.json`; o do registry colorglass em
-`vcpkg-configuration.json`. Nao e preciso rodar x-update-baseline.
+`builtin-baseline` no `vcpkg.json`. Nao e preciso rodar x-update-baseline.
 
 Nota sobre o VCPKG_ROOT: o Developer Command Prompt sobrescreve o VCPKG_ROOT
 para o vcpkg embutido do VS. Para usar o vcpkg standalone controlado, force-o
@@ -33,8 +43,9 @@ no inicio da sessao:
 
 Sequencia:
 
-1. Configurar (CMake baixa e compila o CommonLibSSE-NG na primeira vez - pode
-   levar varios minutos; o terminal pode parecer travado, e normal):
+1. Configurar (o vcpkg resolve as dependencias transitivas na primeira vez -
+   pode levar varios minutos; o terminal pode parecer travado, e normal; o
+   CommonLibSSE-NG em si compila junto com o build, a partir do submodule):
 
        cmake --preset vs2022-windows
 

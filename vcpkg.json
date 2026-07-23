@@ -4,8 +4,10 @@
     "description": "Lodestone - Shared SKSE framework for Skyrim SE mods",
     "builtin-baseline": "fc3f61366102c1f0d4547c06d03c523bb18c13a7",
     "dependencies": [
-        "commonlibsse-ng",
-        "safetyhook"
+        "directxtk",
+        "rapidcsv",
+        "safetyhook",
+        "spdlog"
     ],
     "overrides": [
         {

@@ -709,7 +709,9 @@ namespace Lodestone::Core::MagicScaling
 			entry->header.rank                        = 0;
 			entry->header.priority                    = 0;
 			entry->entryData.entryPoint               = RE::BGSEntryPoint::ENTRY_POINT::kModSpellMagnitude;
-			entry->entryData.function                 = RE::BGSEntryPointPerkEntry::EntryData::Function::kMultiplyValue;
+			// CommonLibSSE-NG 4.x moved the Function alias from EntryData scope to
+			// class scope (same underlying enum, kMultiplyValue is still 3).
+			entry->entryData.function                 = RE::BGSEntryPointPerkEntry::Function::kMultiplyValue;
 			entry->entryData.numArgs                  = kNoConditionTabs;
 			entry->functionData                       = data;
 			entry->perk                               = FindAnyPerk();
@@ -798,7 +800,7 @@ namespace Lodestone::Core::MagicScaling
 				g_syntheticData->data = mult;
 
 				// The return value is captured because it is the only thing the
-				// engine tells us about the entry: kBreak here would mean the
+				// engine tells us about the entry: kStop here would mean the
 				// visitor is done, kContinue that it took ours and wants more.
 				// It is not proof either way, but it is free.
 				const auto result = a_visitor.Visit(g_syntheticEntry);
@@ -816,10 +818,14 @@ namespace Lodestone::Core::MagicScaling
 							offset);
 					}
 
+					// CommonLibSSE-NG 4.x: Visit returns BSContainer::ForEachResult
+					// instead of the old nested ReturnType. Numerically identical
+					// (continue is 1 in both); the "stop" value was named kBreak
+					// in 3.5.3 and is kStop now, so the log label follows the lib.
 					spdlog::debug("MagicScaling/E2: contributed kMultiplyValue {:.4f} from the live channel, "
 								  "visitor returned {}.",
 						mult,
-						result == RE::PerkEntryVisitor::ReturnType::kContinue ? "kContinue" : "kBreak");
+						result == RE::BSContainer::ForEachResult::kContinue ? "kContinue" : "kStop");
 				}
 			} catch (...) {
 				// The original already ran, so the actor's real perks were
