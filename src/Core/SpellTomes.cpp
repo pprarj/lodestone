@@ -262,6 +262,15 @@ namespace Lodestone::Core::SpellTomes
 				try {
 					a_this->data.flags.set(RE::OBJ_BOOK::Flag::kHasBeenRead);
 
+					// The thunk never calls the original Read, so the original's own
+					// AddChange never runs either. In vanilla, AddChange with the
+					// book-read change flag is what tells the changeform system to
+					// serialize kHasBeenRead into the save and reapply it on load;
+					// without it the flag is only ever set in memory, so the book
+					// reads as unread again after the next save/load. This call
+					// reproduces that one side effect by hand, mirroring vanilla.
+					a_this->AddChange(RE::TESObjectBOOK::ChangeFlags::kRead);
+
 					// QueueEvent defers the dispatch off this hook's call stack
 					// onto a game task - safer than reaching into the VM from
 					// deep in the read path. An empty set makes it a no-op.
