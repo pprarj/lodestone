@@ -11,6 +11,27 @@ Scriptname Lodestone Hidden
 ; (empty), Bool -> false. Each function documents its sentinel below. If the DLL
 ; is not installed at all the call fails at the VM level and Papyrus yields the
 ; type default (0 / "") instead of the sentinel - see GetVersion.
+;
+; CHANNELS ARE MULTI-CONTRIBUTOR FROM 1.9.0. A "channel" is a pair of
+; GlobalVariable records you own and drive, handed to the DLL through a
+; Register...Channel function, applied as value = (value * multiplier) + offset.
+; Up to 1.8.2 each channel had ONE owner: the first mod to register won it, and a
+; second mod registering a DIFFERENT pair was refused. From 1.9.0 every distinct
+; plugin that registers CONTRIBUTES, and the DLL composes them:
+;
+;   multiplier total = the product of every registered multiplier
+;   offset total     = the sum of every registered offset
+;   result           = (value * multiplier total) + offset total
+;
+; applied once, not once per contributor. While you are the only registrant -
+; which is every consumer shipping today - the result is identical to what the
+; old single-owner code produced, so nothing you have written needs to change.
+; Re-registering the SAME pair from the same plugin is still a harmless
+; idempotent refresh, which is what re-registering on every game load relies on.
+;
+; You cannot see, outrank or remove another contributor. The diagnostics at the
+; end of this file tell you how many there are and which plugins they come from,
+; and that is deliberately all they do.
 
 ; Returns the packed DLL version: major * 1000000 + minor * 1000 + patch.
 ; Example: 1.0.0 -> 1000000.
@@ -42,15 +63,18 @@ String Function GetVersionString() global native
 ; Both globals belong to YOUR mod - the DLL knows no plugin by name. Drive their
 ; Value fields from your own Papyrus state (INT, fatigue, spell tier, MCM, etc.).
 ;
-; SINGLE CHANNEL (DLL 1.1.0): the first mod to register owns the channel for the
-; session. Re-registering the SAME two globals is a harmless refresh. A second,
-; DIFFERENT mod that registers while a channel is held is warned in the log and
-; ignored (this function returns False for it). Arbitration between several cast
-; time mods is a possible future addition, not part of this version.
+; MULTI-CONTRIBUTOR (DLL 1.9.0+): every distinct plugin that registers a
+; DIFFERENT pair contributes to the channel - multipliers compose by product,
+; offsets compose by sum, applied once. Re-registering the SAME pair from the
+; same plugin remains a harmless idempotent refresh. Before 1.9.0 a second,
+; different registrant was rejected; from 1.9.0 on it is ACCEPTED and composed. A
+; consumer written against the old single-channel behavior sees no change while
+; it is the only registrant.
 ;
-; Returns True when YOUR channel is the active one after the call. Returns False
-; on a None argument, or when a channel from a different registration is already
-; held. If the DLL is absent the call yields the VM default False as well.
+; Returns True when YOUR pair is contributing to the channel after this call
+; (which includes the case where other plugins are also contributing). Returns
+; False on a None argument. If the DLL is absent the call yields the VM default
+; False as well.
 Bool Function RegisterCastTimeChannel(GlobalVariable akMultiplier, GlobalVariable akOffset) global native
 
 ; --- BookFramework (added in DLL 1.2.0) ------------------------------------
@@ -184,11 +208,19 @@ Bool Function ConsumeSpellTome(Book akBook, ObjectReference akActor) global nati
 ; magnitude keeps none, and a spell that costs nothing keeps costing nothing.
 ;
 ; Registration is session-scoped (not saved) - re-register after each load.
-; One channel per quantity: the first registrant wins, re-registering the same
-; pair is a harmless refresh, and a different second registrant is rejected.
+;
+; MULTI-CONTRIBUTOR (DLL 1.9.0+), per quantity: every distinct plugin that
+; registers a DIFFERENT pair contributes to that channel - multipliers compose by
+; product, offsets compose by sum, applied once. Re-registering the SAME pair
+; from the same plugin remains a harmless idempotent refresh. Before 1.9.0 a
+; second, different registrant was rejected; from 1.9.0 on it is ACCEPTED and
+; composed. A consumer written against the old single-channel behavior sees no
+; change while it is the only registrant.
+;
 ; Requires Lodestone.GetVersion() >= 1004000 (1.4.0).
-; All three return True when your pair is the active one, False on a None
-; argument or a rejected second registrant.
+; All three return True when YOUR pair is contributing to the channel after the
+; call (which includes the case where other plugins are also contributing), and
+; False on a None argument.
 
 ; Scales the magnitude of a spell's effects.
 Bool Function RegisterMagicMagnitudeChannel(GlobalVariable akMultiplier, GlobalVariable akOffset) global native
@@ -199,3 +231,39 @@ Bool Function RegisterMagicDurationChannel(GlobalVariable akMultiplier, GlobalVa
 ; Scales a spell's magicka cost. Use a multiplier below 1.0 to make casting
 ; cheaper.
 Bool Function RegisterMagicCostChannel(GlobalVariable akMultiplier, GlobalVariable akOffset) global native
+
+; --- Detection scaling channel (added in DLL 1.9.0) -----------------------
+;
+; Scales a detection-related value you compute yourself, the same shape as the
+; magic scaling channels: value = (value * multiplier) + offset.
+; MULTI-CONTRIBUTOR from the start - see the note at the top of this file.
+;
+; This channel does NOT read game state for you. There is no hook yet that feeds
+; it environmental context (light, noise, movement) - that is a separate, future
+; capability. Today this channel is infrastructure only: register it, drive your
+; own globals from your own Papyrus logic, and the DLL composes correctly when
+; more than one consumer registers.
+;
+; Registration is session-scoped (not saved) - re-register after each load.
+;
+; Requires Lodestone.GetVersion() >= 1009000 (1.9.0).
+; Returns True when YOUR pair is contributing to the channel after the call,
+; False on a None argument.
+Bool Function RegisterDetectionMultiplierChannel(GlobalVariable akMultiplier, GlobalVariable akOffset) global native
+
+; --- Diagnostics (added in DLL 1.9.0) ---------------------------------
+;
+; Read-only. They tell you who else is driving a channel; they give you no way to
+; change it. Which contributor "wins" is not a question this framework answers -
+; all of them do, by composition.
+;
+; Returns how many distinct plugins currently contribute to asChannel.
+; Valid asChannel values: "CastTime", "MagicMagnitude", "MagicDuration",
+; "MagicCost", "Detection". Unknown name or DLL absent -> -1. Zero is a real
+; answer: the channel exists and nobody has registered on it.
+Int Function GetChannelContributorCount(String asChannel) global native
+
+; Returns the source plugin filename of the contributor at aiIndex
+; (0-based, order not guaranteed stable across registrations). Out-of-range
+; index, unknown channel name, or DLL absent -> "".
+String Function GetChannelContributorPlugin(String asChannel, Int aiIndex) global native

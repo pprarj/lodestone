@@ -31,8 +31,7 @@
 //   RE::TESGlobal (verified against the installed CommonLibSSE-NG 3.5.3: a form
 //   pointer parameter is registered under its FORMTYPE and unpacked back to the
 //   same pointer type - see RE/P/PackUnpack.h). Returns true when the caller's
-//   channel is the active one after the call, false otherwise (null argument, or a
-//   distinct second registrant rejected by the single-channel policy below).
+//   pair is contributing to the channel after the call, false on a null argument.
 //
 // ORDERING REQUIREMENT (the consumer must honor this):
 //   The channel must be registered BEFORE the first cast the consumer wants
@@ -42,18 +41,19 @@
 //   degradation the module has always had: "not registered yet" is indistinguishable
 //   from "not installed", and both leave the game at vanilla behavior.
 //
-// SINGLE CHANNEL - v1 DECISION (open for review):
-//   v1 implements ONE channel. The first valid registration wins and owns the
-//   channel for the process lifetime. A later registration of the SAME two globals
-//   is treated as an idempotent refresh (e.g. the consumer re-registers on every
-//   game load) and is accepted silently. A registration of DIFFERENT globals while
-//   a channel is already held is a genuine second registrant: it is warned in the
-//   log and REJECTED (the held channel is unchanged, the native returns false).
-//   This mirrors standard SKSE framework posture - a single owner of this hook.
-//   Rich arbitration between several cast-time mods (chaining,
-//   summing, priority) is a documented FUTURE improvement, deliberately NOT built
-//   here and NOT a blocker for going public. See CastTime.cpp for the same note at
-//   the registration site.
+// MULTI-CONTRIBUTOR SINCE 1.9.0:
+//   Every distinct plugin that registers contributes to the channel. Multipliers
+//   compose by product, offsets by sum, applied in one pass - the arithmetic and
+//   the reasoning live in MultiChannel.h. Re-registering the SAME pair from the
+//   same plugin is an idempotent refresh, which is what a consumer re-registering
+//   on every game load relies on.
+//
+//   Through 1.8.2 this was ONE channel, first-registrant-wins: a registration of
+//   DIFFERENT globals while a channel was held was warned in the log and
+//   REJECTED. That is the policy this version retires, and the reason is that the
+//   loser of that contest failed silently - a log line, and an author with a bug
+//   report and no cause. A consumer written against the old behavior sees no
+//   difference while it is the only registrant.
 //
 // This module has TWO seams into the plugin, because it is both a native provider
 // and an engine hook:
@@ -68,8 +68,17 @@
 
 #pragma once
 
+#include "MultiChannel.h"
+
 namespace Lodestone::Core::CastTime
 {
+	// The module's channel, for the diagnostic natives in ChannelInfo.cpp.
+	//
+	// A getter rather than the variable itself: the channel stays in the .cpp's
+	// anonymous namespace, so nothing outside this module can register on it or
+	// swap it - only ask it what it is carrying.
+	MultiChannel& GetChannel();
+
 	// Registers this module's native functions with the Papyrus VM.
 	// Called by Lodestone::Core::Papyrus::Register - never called directly.
 	//

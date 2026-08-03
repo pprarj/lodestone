@@ -12,6 +12,18 @@ No balance value, no design decision, no tuning number lives in this DLL. The na
 
 Test: if changing a number here would change how a mod plays, that number is in the wrong place.
 
+### Combining several consumers' requests is Core's job, not policy leaking in.
+
+A channel accepts N contributors and composes them: multipliers by product, offsets by sum, applied in one pass. That looks like the rule above being broken - a decision about numbers, living in the DLL - and it is the inverse of it.
+
+No consumer can see the other contributors to a channel. Only Core can. Combining them is therefore precisely the work nothing else is in a position to do, and refusing to do it does not avoid the decision: it just makes the decision "the first registrant wins and the rest are discarded", which is a balance outcome too, and a worse one, arrived at by load order.
+
+Balancing stays out. **How much** each consumer asks for - its own multiplier and offset - is its Papyrus's decision. **How several requests combine** is the Core's. Changing the composition rule would change how a mod plays, so it is a published behavior under the versioning contract, not a number anyone tunes.
+
+**A contributor's identity is derived, never asked for.** The key is `TESForm::GetFile(0)` on the multiplier global - the filename of the plugin that *created* the record, not whichever one edited it last, so a patch overriding a consumer's global does not change who the contributor is. Deriving it is what let this change ship without touching a published signature: consumers pass the same two arguments they always passed and became contributors without recompiling.
+
+`GetFile(0)` can return null, and the fallback matters more than it looks. A global handed in from Papyrus came out of a loaded plugin, so this has never been observed - but the two obvious responses to it are both worse than a synthetic key. Rejecting the registration resurrects exactly the silent failure the multi-contributor change removed. Returning an empty key makes every such global collide, so the second registrant silently overwrites the first. The fallback keys by FormID instead: registrants stay separate and keep composing, at the price of identity no longer being per-plugin. That price is what the "unusually many contributors" warning exists to make visible - a channel accumulating FormID-shaped keys is a registration loop or a bad key, not a crowded modlist.
+
 ### Core never knows a consumer by name. Domain may.
 
 | Layer | Namespace | Rule |

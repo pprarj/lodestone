@@ -14,15 +14,21 @@ It is built on [CommonLibSSE-NG](https://github.com/alandtse/CommonLibVR/tree/ng
 
 Lodestone was extracted from the Intelligence Matters SKSE plugin, which is its first consumer. As of this release, Intelligence Matters has completed its migration and drives all four gameplay modules directly (Cast Time, Book Framework, Spell Tomes, Magic Scaling). Every channel has been validated end to end in game, including reload behavior for the session-scoped ones. The API is small and will keep growing as more consumers arrive; the versioning contract below exists for that reason.
 
+**1.9.0 makes every channel multi-contributor.** Until 1.8.2 a channel had one owner: the first mod to register won it for the session, and a second mod registering a different pair of globals was warned in the log and refused. That is fine while one mod uses a channel and fails the moment two do - the loser dies quietly and its author gets a bug report with no visible cause. From 1.9.0 every registrant contributes and the DLL composes them (multipliers by product, offsets by sum). **Existing consumers need to change nothing**: no signature moved, and while a mod is the only registrant the numbers it gets are the same ones it got before. See [Channels and composition](#channels-and-composition).
+
 Currently implemented. Every module is Core - it never knows a consumer by name. The Domain layer described in CONVENTIONS exists but is currently empty.
 
 | Module | Since | Papyrus surface |
 | ------ | ----- | --------------- |
 | PluginInfo | 1.0.0 | `GetVersion()`, `GetVersionString()` |
-| CastTime | 1.1.0 | `RegisterCastTimeChannel()` |
+| CastTime | 1.1.0 (multi-contributor since 1.9.0) | `RegisterCastTimeChannel()` |
 | BookFramework | 1.2.0 | `SetBookText()`, `AppendBookText()`, `ClearBookText()`, `GetBookText()` |
 | SpellTomes | 1.3.0 (behavior changed in 1.5.0; alias registration added in 1.6.0; suppression gated on registration in 1.8.0) | `RegisterForSpellTomeRead()`, `UnregisterForSpellTomeRead()`, `RegisterForSpellTomeReadAlias()`, `UnregisterForSpellTomeReadAlias()`, `ConsumeSpellTome()`, event `OnSpellTomeRead` |
-| MagicScaling | 1.4.0 (magnitude moved to the perk entry seam in 1.7.0 - now shows in the spell menu, and no longer touches enchantments, food or potions) | `RegisterMagicMagnitudeChannel()`, `RegisterMagicDurationChannel()`, `RegisterMagicCostChannel()` |
+| MagicScaling | 1.4.0 (magnitude moved to the perk entry seam in 1.7.0 - now shows in the spell menu, and no longer touches enchantments, food or potions; multi-contributor since 1.9.0) | `RegisterMagicMagnitudeChannel()`, `RegisterMagicDurationChannel()`, `RegisterMagicCostChannel()` |
+| Detection | 1.9.0 | `RegisterDetectionMultiplierChannel()` |
+| ChannelInfo | 1.9.0 | `GetChannelContributorCount()`, `GetChannelContributorPlugin()` |
+
+**Detection is a channel with no hook behind it yet**, and that is deliberate rather than unfinished. It scales a detection value you compute yourself, with the same shape as the magic scaling channels. Nothing in the DLL reads light, noise or movement to feed it - that needs engine investigation that has not happened, and guessing the shape of a public signature now would be carried forever. Shipping the channel first costs nothing and means the capability is born multi-contributor instead of needing a deprecation later.
 
 All functions are global natives on the `Lodestone` script, so they are called as `Lodestone.GetVersion()`. Full signatures and per-function notes are in `Lodestone.psc`, which is the authoritative reference - a consumer copies that file into its own scripts.
 
@@ -62,6 +68,34 @@ EndFunction
 `GetVersion()` returns the version packed as `major * 1000000 + minor * 1000 + patch`, so `1.0.0` is `1000000`.
 
 If the DLL is missing or failed to load, the native call fails at the VM level and Papyrus yields `0`, which is below any real version. A single `>=` check therefore covers both "absent" and "too old". Do not parse `GetVersionString()` for gating - it exists for display and logs.
+
+### Channels and composition
+
+Most of what Lodestone does is exposed as a **channel**: you own two `GlobalVariable` records - a multiplier and an offset - drive them from your own Papyrus, and hand them to the DLL once at startup and after every load. The DLL then applies them where the engine has finished computing the quantity:
+
+```
+value = (value * multiplier) + offset
+```
+
+A multiplier of `1.0` with an offset of `0.0` is a no-op, so a channel can be neutralised without unregistering it. A channel nobody has registered is pure passthrough.
+
+Since **1.9.0** a channel takes any number of contributors, identified by the plugin the multiplier global came from. They compose:
+
+```
+multiplier total = the product of every registered multiplier
+offset total     = the sum of every registered offset
+result           = (value * multiplier total) + offset total
+```
+
+Applied once, not once per contributor. Registering the same pair again from the same plugin is an idempotent refresh, so re-registering on every game load costs nothing and does not double anything.
+
+Three consequences worth stating plainly:
+
+- **Nothing is refused.** `Register...Channel` returns `True` when *your* pair is contributing, which now includes the case where other mods are contributing too. It returns `False` only on a `None` argument.
+- **While you are alone, nothing changed.** One contributor makes the totals `1.0 * multiplier` and `0.0 + offset`, which are exact in floating point. A consumer written against the single-owner versions computes the same numbers on 1.9.0.
+- **You cannot see the others from your own maths, only from the diagnostics.** `GetChannelContributorCount()` and `GetChannelContributorPlugin()` report how many plugins drive a channel and which ones, for an MCM or a debug command. They are read-only on purpose: no consumer can outrank or evict another. Which mod wins is not a question this framework answers - all of them do, by composition.
+
+Balance stays where it always was. How much *you* ask for is your Papyrus's decision; how several requests combine is the DLL's, because the DLL is the only thing that can see more than one of them.
 
 ### Versioning contract
 

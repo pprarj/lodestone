@@ -118,47 +118,26 @@
 
 #include <safetyhook.hpp>
 
-#include <atomic>
-#include <mutex>
-
 namespace Lodestone::Core::MagicScaling
 {
 	namespace
 	{
 		// -------------------------------------------------------------------
-		// A channel - one registered pair of globals
+		// The three channels
 		//
-		// THREADING mirrors the cast time module: the hooks run on the game
-		// thread, registration runs on a Papyrus VM thread, so the pointers are
-		// atomic and the hot path reads them lock-free. On x64 an acquire load of
-		// an aligned pointer is a plain mov. The mutex serialises registrants
-		// against each other only - no hook ever touches it.
+		// Each was a struct Channel holding two std::atomic<TESGlobal*>, owned by
+		// its first registrant, with a shared RegisterChannel() enforcing
+		// first-registrant-wins. Both are gone: MultiChannel carries the storage,
+		// the same threading discipline (hooks read lock-free on the game thread,
+		// registrants serialise on a mutex no hook touches) and, since 1.9.0, the
+		// composition of N contributors instead of the rejection of the second.
+		//
+		// The names are the channels' canonical ones - what the diagnostic
+		// natives take, and what appears in the log.
 		// -------------------------------------------------------------------
-		struct Channel
-		{
-			std::atomic<RE::TESGlobal*> multiplier{ nullptr };
-			std::atomic<RE::TESGlobal*> offset{ nullptr };
-
-			// Reads the pair into locals so a formula sees a consistent snapshot
-			// even if a registration lands mid-hook. Worst case in that instant is
-			// one extra passthrough, which is not a state anyone can observe.
-			bool Read(float& a_mult, float& a_offset) const
-			{
-				RE::TESGlobal* m = multiplier.load(std::memory_order_acquire);
-				RE::TESGlobal* o = offset.load(std::memory_order_acquire);
-				if (!m || !o) {
-					return false;
-				}
-				a_mult   = m->value;
-				a_offset = o->value;
-				return true;
-			}
-		};
-
-		Channel    g_magnitude;
-		Channel    g_duration;
-		Channel    g_cost;
-		std::mutex g_registerLock;
+		MultiChannel g_magnitude{ "MagicMagnitude" };
+		MultiChannel g_duration{ "MagicDuration" };
+		MultiChannel g_cost{ "MagicCost" };
 
 		// value = (value * multiplier) + offset, clamped at zero.
 		//
@@ -184,55 +163,6 @@ namespace Lodestone::Core::MagicScaling
 		bool IsOrdinarySpell(RE::MagicItem* a_item)
 		{
 			return a_item && a_item->GetSpellType() == RE::MagicSystem::SpellType::kSpell;
-		}
-
-		// -------------------------------------------------------------------
-		// Registration, shared by all three natives
-		//
-		// SINGLE CHANNEL - v1, first-registrant-wins. Same pair re-registered is
-		// an idempotent refresh; a different second registrant is warned and
-		// rejected, and the held channel is left untouched.
-		//
-		// Offset is published first and multiplier last (release), so a hook that
-		// observes a set multiplier also observes the offset.
-		// -------------------------------------------------------------------
-		bool RegisterChannel(Channel& a_channel, const char* a_name,
-			RE::TESGlobal* a_multiplier, RE::TESGlobal* a_offset)
-		{
-			if (!a_multiplier || !a_offset) {
-				spdlog::warn("MagicScaling: Register{}Channel got a null global (multiplier={}, offset={}) - ignored.",
-					a_name,
-					a_multiplier ? "ok" : "NULL",
-					a_offset ? "ok" : "NULL");
-				return false;
-			}
-
-			std::lock_guard<std::mutex> lock(g_registerLock);
-
-			RE::TESGlobal* curMult   = a_channel.multiplier.load(std::memory_order_acquire);
-			RE::TESGlobal* curOffset = a_channel.offset.load(std::memory_order_acquire);
-
-			if (curMult && curOffset) {
-				if (curMult == a_multiplier && curOffset == a_offset) {
-					spdlog::debug("MagicScaling: {} channel re-registered with the same globals - no-op.", a_name);
-					return true;
-				}
-
-				spdlog::warn("MagicScaling: a second, DIFFERENT {} channel tried to register "
-							 "(new multiplier=0x{:08X}, offset=0x{:08X}); the first channel "
-							 "(multiplier=0x{:08X}, offset=0x{:08X}) keeps ownership. Ignoring the new one.",
-					a_name,
-					a_multiplier->GetFormID(), a_offset->GetFormID(),
-					curMult->GetFormID(), curOffset->GetFormID());
-				return false;
-			}
-
-			a_channel.offset.store(a_offset, std::memory_order_release);
-			a_channel.multiplier.store(a_multiplier, std::memory_order_release);
-
-			spdlog::info("MagicScaling: {} channel registered (multiplier=0x{:08X}, offset=0x{:08X}) - ACTIVE.",
-				a_name, a_multiplier->GetFormID(), a_offset->GetFormID());
-			return true;
 		}
 
 		// -------------------------------------------------------------------
@@ -889,23 +819,40 @@ namespace Lodestone::Core::MagicScaling
 		// Natives
 		//
 		// Error convention (Stage B.3): failure by return value, never by
-		// throwing. Returns true when the CALLER's pair is the active one after
-		// the call; false on a null argument or a rejected second registrant.
+		// throwing. Returns true when the CALLER's pair is contributing to the
+		// channel after the call - which since 1.9.0 includes the case where
+		// other plugins are contributing too - and false on a null argument.
+		// Nothing is rejected any more; see MultiChannel.h.
 		// -------------------------------------------------------------------
 		bool RegisterMagicMagnitudeChannel(RE::StaticFunctionTag*, RE::TESGlobal* a_multiplier, RE::TESGlobal* a_offset)
 		{
-			return RegisterChannel(g_magnitude, "magnitude", a_multiplier, a_offset);
+			return g_magnitude.Register(a_multiplier, a_offset);
 		}
 
 		bool RegisterMagicDurationChannel(RE::StaticFunctionTag*, RE::TESGlobal* a_multiplier, RE::TESGlobal* a_offset)
 		{
-			return RegisterChannel(g_duration, "duration", a_multiplier, a_offset);
+			return g_duration.Register(a_multiplier, a_offset);
 		}
 
 		bool RegisterMagicCostChannel(RE::StaticFunctionTag*, RE::TESGlobal* a_multiplier, RE::TESGlobal* a_offset)
 		{
-			return RegisterChannel(g_cost, "cost", a_multiplier, a_offset);
+			return g_cost.Register(a_multiplier, a_offset);
 		}
+	}
+
+	MultiChannel& GetMagnitudeChannel()
+	{
+		return g_magnitude;
+	}
+
+	MultiChannel& GetDurationChannel()
+	{
+		return g_duration;
+	}
+
+	MultiChannel& GetCostChannel()
+	{
+		return g_cost;
 	}
 
 	bool RegisterFuncs(RE::BSScript::IVirtualMachine* a_vm)

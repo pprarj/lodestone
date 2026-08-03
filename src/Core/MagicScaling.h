@@ -102,11 +102,14 @@
 // derivation is the actor's school skill, which is one of the options above
 // rather than a settled decision.
 //
-// SINGLE CHANNEL PER QUANTITY, first-registrant-wins, matching the cast time
-// module's v1 policy. Re-registering the same pair is an idempotent refresh (a
-// consumer may re-register on every load); a different second registrant is
-// warned and rejected. Arbitration between several scaling mods is a future
-// improvement and is not a blocker.
+// MULTI-CONTRIBUTOR PER QUANTITY SINCE 1.9.0, matching the cast time module.
+// Every distinct plugin that registers contributes: multipliers compose by
+// product, offsets by sum, applied in one pass. Re-registering the same pair is
+// an idempotent refresh (a consumer may re-register on every load). Through
+// 1.8.2 each quantity was a single channel, first-registrant-wins, and a
+// different second registrant was warned and rejected - see MultiChannel.h for
+// why that was retired and why a lone consumer computes the same numbers either
+// way.
 //
 // PERSISTENCE. Registration is session-scoped and not serialised. A consumer
 // re-registers after each load, exactly as it does for the other modules.
@@ -117,8 +120,18 @@
 
 #pragma once
 
+#include "MultiChannel.h"
+
 namespace Lodestone::Core::MagicScaling
 {
+	// The module's three channels, for the diagnostic natives in
+	// ChannelInfo.cpp. Getters rather than the variables: the channels stay in
+	// the .cpp's anonymous namespace, so nothing outside this module can register
+	// on one or swap it - only ask it what it is carrying.
+	MultiChannel& GetMagnitudeChannel();
+	MultiChannel& GetDurationChannel();
+	MultiChannel& GetCostChannel();
+
 	// Installs the engine hooks. Called from plugin.cpp on kDataLoaded. Never
 	// throws; on failure the module stays passthrough and says so in the log.
 	void Install();

@@ -15,7 +15,7 @@ cmake_minimum_required(VERSION 3.21)
 # DLL version - INDEPENDENT of the mod version on Nexus.
 project(
     Lodestone
-    VERSION 1.8.2
+    VERSION 1.9.0
     LANGUAGES CXX
 )
 
@@ -95,10 +95,13 @@ add_commonlibsse_plugin(
         src/Core/Log.cpp
         src/Core/Papyrus.cpp
         src/Core/PluginInfo.cpp
+        src/Core/MultiChannel.cpp
+        src/Core/ChannelInfo.cpp
         src/Core/CastTime.cpp
         src/Core/BookFramework.cpp
         src/Core/SpellTomes.cpp
         src/Core/MagicScaling.cpp
+        src/Core/Detection.cpp
 )
 
 target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_23)

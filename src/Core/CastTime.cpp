@@ -40,9 +40,6 @@
 
 #include "CastTime.h"
 
-#include <atomic>
-#include <mutex>
-
 namespace Lodestone::Core::CastTime
 {
 	namespace
@@ -50,26 +47,23 @@ namespace Lodestone::Core::CastTime
 		// -------------------------------------------------------------------
 		// The registered channel - the Papyrus -> native link
 		//
-		// These used to be resolved on kDataLoaded from a hardcoded ESP. They are
-		// now handed in by the consumer through RegisterCastTimeChannel (see
-		// below). The per-cast cost is still two float reads through two stable
-		// pointers.
+		// This used to be resolved on kDataLoaded from a hardcoded ESP. It is now
+		// handed in by the consumer through RegisterCastTimeChannel (see below).
 		//
-		// Both null => no consumer has registered => passthrough, and the hook
-		// costs two pointer compares. That is the same "silent degradation"
-		// property the old lookup had: "not registered yet" reads identically to
-		// "not installed".
+		// Empty => no consumer has registered => passthrough, and the hook costs
+		// one acquire load and a null compare. That is the same "silent
+		// degradation" property the old lookup had: "not registered yet" reads
+		// identically to "not installed".
 		//
-		// THREADING: the hook (Apply) runs on the game thread; registration runs
-		// on a Papyrus VM thread. The pointers are therefore atomic so the hook
-		// reads them lock-free with no torn/reordered read. On x64 an acquire load
-		// of an aligned pointer is a plain mov, so the hot path pays nothing over a
-		// raw pointer read. g_registerLock serializes registrants against each
-		// other only (the check-then-store decision); the hook never touches it.
+		// MULTI-CONTRIBUTOR SINCE 1.9.0. Until 1.8.2 this was two loose
+		// std::atomic<TESGlobal*> owned by the first registrant, and a second,
+		// different registrant was rejected. MultiChannel replaces both the
+		// storage and that policy; the threading discipline is the same one those
+		// atomics implemented (hook reads lock-free on the game thread,
+		// registrants serialise against each other on a mutex the hook never
+		// touches) and is now written down in one place instead of four.
 		// -------------------------------------------------------------------
-		std::atomic<RE::TESGlobal*> g_multiplier{ nullptr };
-		std::atomic<RE::TESGlobal*> g_offset{ nullptr };
-		std::mutex                  g_registerLock;
+		MultiChannel g_channel{ "CastTime" };
 
 		// -------------------------------------------------------------------
 		// Debug trace
@@ -105,14 +99,13 @@ namespace Lodestone::Core::CastTime
 		// -------------------------------------------------------------------
 		void Apply(RE::MagicCaster* a_this)
 		{
-			// 0. Channel registered? Two acquire loads + two pointer compares,
-			//    cuts 100% when no consumer has registered. Loaded into locals
-			//    once so the formula below reads a consistent pair even if a
-			//    registration lands mid-hook (worst case: one extra passthrough
-			//    cast during that instant).
-			RE::TESGlobal* mult   = g_multiplier.load(std::memory_order_acquire);
-			RE::TESGlobal* offset = g_offset.load(std::memory_order_acquire);
-			if (!mult || !offset) {
+			// 0. Anyone registered? One acquire load and a compare, which cuts
+			//    100% when no consumer has registered. Deliberately NOT the
+			//    composed read: that walks the contributors and reads their
+			//    globals, and this hook fires 316 times a minute to reach the
+			//    formula 4 times. The values are read at step 4, past every
+			//    filter, exactly where the two loose atomics used to be read.
+			if (!g_channel.HasContributors()) {
 				return;
 			}
 
@@ -188,9 +181,18 @@ namespace Lodestone::Core::CastTime
 			//    ONLY in castingTimer. Building the formula on either of the other
 			//    two would silently discard dual casting and every charge-time
 			//    perk.
-			const float before   = a_this->castingTimer;
-			const float multVal   = mult->value;
-			const float offsetVal = offset->value;
+			const float before = a_this->castingTimer;
+
+			// The contributors are composed here, into locals, so the formula
+			// sees a consistent multiplier and offset even if a registration
+			// lands mid-hook (worst case in that instant: one passthrough cast).
+			// This is where the two loose atomics used to be dereferenced, and it
+			// fails only if every contributor unregistered since step 0 - which
+			// leaves the timer at the engine's own value.
+			float multVal = 0.0f, offsetVal = 0.0f;
+			if (!g_channel.Read(multVal, offsetVal)) {
+				return;
+			}
 
 			float after = (before * multVal) + offsetVal;
 
@@ -280,62 +282,30 @@ namespace Lodestone::Core::CastTime
 		// Papyrus state. From this call on, the hook scales the player's cast time
 		// by those globals' value fields. Before it, the hook is passthrough.
 		//
-		// SINGLE CHANNEL - v1 DECISION (the one semantics choice worth a review):
-		//   v1 is one channel, first-registrant-wins. Re-registering the SAME pair
-		//   is an idempotent refresh (the consumer may re-register on every game
-		//   load) and is accepted silently. A DISTINCT second registrant while a
-		//   channel is already held is warned and REJECTED - the held channel is
-		//   left untouched and the native returns false. This is standard SKSE
-		//   framework posture (a single owner of this hook). Rich
-		//   arbitration between several cast-time mods (chaining, summing,
-		//   priority) is a FUTURE improvement, intentionally not built here and not
-		//   a blocker for going public.
+		// MULTI-CONTRIBUTOR SINCE 1.9.0 - the one semantics change in this
+		// version, and the signature is untouched by it:
+		//   Every distinct plugin that registers contributes. Multipliers compose
+		//   by product, offsets by sum, applied once. Re-registering the SAME pair
+		//   from the same plugin is still an idempotent refresh, which is what a
+		//   consumer re-registering on every game load relies on. Until 1.8.2 a
+		//   second, DIFFERENT registrant was warned and rejected; it is now
+		//   accepted and composed, and MultiChannel.h says why that policy had to
+		//   go.
 		//
 		// Error convention (Stage B.3): reports failure by return value, never by
-		// throwing. Returns true when the CALLER's channel is the active one after
-		// this call; false on a null argument or a rejected second registrant.
+		// throwing. Returns true when the CALLER's pair is contributing after this
+		// call - which now includes the case where other plugins contribute too -
+		// and false on a null argument.
 		// -------------------------------------------------------------------
 		bool RegisterCastTimeChannel(RE::StaticFunctionTag*, RE::TESGlobal* a_multiplier, RE::TESGlobal* a_offset)
 		{
-			if (!a_multiplier || !a_offset) {
-				spdlog::warn("CastTime: RegisterCastTimeChannel got a null global (multiplier={}, offset={}) - ignored.",
-					a_multiplier ? "ok" : "NULL",
-					a_offset ? "ok" : "NULL");
-				return false;
-			}
-
-			std::lock_guard<std::mutex> lock(g_registerLock);
-
-			RE::TESGlobal* curMult   = g_multiplier.load(std::memory_order_acquire);
-			RE::TESGlobal* curOffset = g_offset.load(std::memory_order_acquire);
-
-			if (curMult && curOffset) {
-				// A channel is already held.
-				if (curMult == a_multiplier && curOffset == a_offset) {
-					// Same pair - idempotent refresh (e.g. re-register on reload).
-					spdlog::debug("CastTime: channel re-registered with the same globals - no-op.");
-					return true;
-				}
-
-				// Distinct second registrant - single-channel v1 policy.
-				spdlog::warn("CastTime: a second, DIFFERENT cast time channel tried to register "
-							 "(new multiplier=0x{:08X}, offset=0x{:08X}); the first channel "
-							 "(multiplier=0x{:08X}, offset=0x{:08X}) keeps ownership. Ignoring the new one.",
-					a_multiplier->GetFormID(), a_offset->GetFormID(),
-					curMult->GetFormID(), curOffset->GetFormID());
-				return false;
-			}
-
-			// First registration. Store offset first, multiplier last: the hook's
-			// guard checks both, and publishing the multiplier last (release) means
-			// a hook that observes a set multiplier also observes the offset.
-			g_offset.store(a_offset, std::memory_order_release);
-			g_multiplier.store(a_multiplier, std::memory_order_release);
-
-			spdlog::info("CastTime: cast time channel registered (multiplier=0x{:08X}, offset=0x{:08X}) - module ACTIVE.",
-				a_multiplier->GetFormID(), a_offset->GetFormID());
-			return true;
+			return g_channel.Register(a_multiplier, a_offset);
 		}
+	}
+
+	MultiChannel& GetChannel()
+	{
+		return g_channel;
 	}
 
 	bool RegisterFuncs(RE::BSScript::IVirtualMachine* a_vm)
