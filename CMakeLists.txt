@@ -153,3 +153,64 @@ if(LODESTONE_OUTPUT_FOLDER)
         VERBATIM
     )
 endif()
+
+# ---------------------------------------------------------------------------
+# Compiles and deploys the Papyrus surface (src/Lodestone.psc -> Lodestone.pex,
+# plus the .psc source itself) to the same mod folder as the DLL, after each
+# build. Consumers never need their own copy of the script - Scripts/ and
+# Scripts/Source/ land as siblings of SKSE/, the layout every consumer's
+# import path already expects.
+#
+# WHY THIS EXISTS. The DLL deploy above already existed; the Papyrus side did
+# not, and that gap caused a real bug: a session that only rebuilt the DLL had
+# it deployed automatically, while the installed .psc/.pex stayed stale, and a
+# consumer's own build gate (reading the installed .psc) failed to find
+# natives that were, in fact, already in the DLL. Compiling and copying both
+# artifacts from the same POST_BUILD step ties them to one trigger, so a
+# fresh DLL next to a stale Papyrus surface cannot happen again.
+#
+# LODESTONE_PAPYRUS_COMPILER is overridable the same way LODESTONE_OUTPUT_FOLDER
+# is above: a contributor's Skyrim install path is not ours to hardcode, so the
+# default below is only a fallback. If the compiler is not found at that path,
+# this step is skipped with a message instead of failing the native build -
+# a missing Papyrus toolchain is an environment gap, not a C++ build error.
+# ---------------------------------------------------------------------------
+if(NOT DEFINED LODESTONE_PAPYRUS_COMPILER AND DEFINED ENV{LODESTONE_PAPYRUS_COMPILER})
+    set(LODESTONE_PAPYRUS_COMPILER "$ENV{LODESTONE_PAPYRUS_COMPILER}")
+endif()
+
+if(NOT DEFINED LODESTONE_PAPYRUS_COMPILER)
+    set(LODESTONE_PAPYRUS_COMPILER "G:/SteamLibrary/steamapps/common/Skyrim Special Edition/Papyrus Compiler/PapyrusCompiler.exe")
+endif()
+
+if(LODESTONE_OUTPUT_FOLDER AND EXISTS "${LODESTONE_PAPYRUS_COMPILER}")
+    # LODESTONE_OUTPUT_FOLDER is .../<mod>/SKSE/Plugins - strip two levels to
+    # reach the mod's own root, so Scripts/ lands as SKSE/'s sibling.
+    get_filename_component(_lodestoneSkseFolder "${LODESTONE_OUTPUT_FOLDER}" DIRECTORY)
+    get_filename_component(_lodestoneModRoot "${_lodestoneSkseFolder}" DIRECTORY)
+    set(LODESTONE_SCRIPTS_FOLDER "${_lodestoneModRoot}/Scripts")
+
+    # Base-game import paths - Lodestone.psc itself imports nothing beyond
+    # native Skyrim types, but the compiler still needs these on the search
+    # path to resolve Actor, Form, Alias and the rest of the base types.
+    set(_lodestoneGameScriptsSource "G:/SteamLibrary/steamapps/common/Skyrim Special Edition/Data/Scripts/Source")
+    set(_lodestoneGameSourceScripts "G:/SteamLibrary/steamapps/common/Skyrim Special Edition/Data/Source/Scripts")
+
+    message(STATUS "Papyrus deploy folder: ${LODESTONE_SCRIPTS_FOLDER}")
+    add_custom_command(
+        TARGET ${PROJECT_NAME}
+        POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${LODESTONE_SCRIPTS_FOLDER}/Source"
+        COMMAND "${LODESTONE_PAPYRUS_COMPILER}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/Lodestone.psc"
+            -f=TESV_Papyrus_Flags.flg
+            "-i=${CMAKE_CURRENT_SOURCE_DIR}/src;${_lodestoneGameScriptsSource};${_lodestoneGameSourceScripts}"
+            "-o=${LODESTONE_SCRIPTS_FOLDER}"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/Lodestone.psc" "${LODESTONE_SCRIPTS_FOLDER}/Source/Lodestone.psc"
+        VERBATIM
+    )
+elseif(LODESTONE_OUTPUT_FOLDER)
+    message(STATUS "Papyrus deploy skipped: compiler not found at "
+                    "\"${LODESTONE_PAPYRUS_COMPILER}\" (set LODESTONE_PAPYRUS_COMPILER to override).")
+endif()
