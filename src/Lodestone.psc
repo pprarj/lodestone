@@ -335,5 +335,9 @@ Bool Function UnregisterForActorWokeAlias(Alias akAlias) global native
 
 ; Dispatched when a managed-unconscious actor wakes, automatically or
 ; forced. A script that registered via RegisterForActorWoke or
-; RegisterForActorWokeAlias implements this to find out.
-Event OnActorWoke(Actor akActor)
+; RegisterForActorWokeAlias implements this to find out - declare it in
+; YOUR OWN script as:
+;
+;   Event OnActorWoke(Actor akActor)
+;       ; your handler
+;   EndEvent
