@@ -267,3 +267,73 @@ Int Function GetChannelContributorCount(String asChannel) global native
 ; (0-based, order not guaranteed stable across registrations). Out-of-range
 ; index, unknown channel name, or DLL absent -> "".
 String Function GetChannelContributorPlugin(String asChannel, Int aiIndex) global native
+
+; --- Incapacitation (added in DLL 1.10.0) ----------------------------------
+;
+; A managed non-lethal knockout: mark an actor as managed-unconscious, query
+; that state, and wake the actor - automatically (your own Papyrus timer) or
+; forced. Built for a stealth takedown feature, but nothing here is specific
+; to any one consumer.
+;
+; IsManagedUnconscious answers from Lodestone's OWN registry, not from the
+; vanilla Actor.IsUnconscious() - so it distinguishes "this module knocked
+; this actor out" from "this actor is stunned by something else" (magic
+; paralysis, Unrelenting Force, etc), which never set the same life state.
+;
+; NO DURATION LOGIC LIVES HERE. How long a knockout lasts is a balance
+; decision, and this framework does not make those - see the note at the top
+; of this file. Drive your own timer (RegisterForSingleUpdate, re-armed on
+; every load, the same pattern this file already expects of you for anything
+; timer-based) and call WakeActor when you decide the knockout ends. The same
+; WakeActor also serves a forced wake - the only difference is who calls it
+; and when.
+;
+; V1 HAS NO PAIRED ANIMATION. The actor stops acting hostile and its AI
+; package is re-evaluated on waking, but it does not physically fall over.
+; An animated knockout is a separate, future capability.
+;
+; PERSISTENCE: the set of managed actors survives a save/reload (this module
+; keeps its own cosave record). The consumer's own timer state is Papyrus's
+; responsibility, as always - re-arm it on load like any other timer.
+;
+; Registration for OnActorWoke is session-scoped (not saved) - re-register
+; after each load, the same runtime model the other modules use.
+;
+; Requires Lodestone.GetVersion() >= 1010000 (1.10.0) for every function below.
+
+; Marks akActor as managed-unconscious: interrupts what it is doing and sets
+; it to stop acting hostile. Refuses (returns False) a None actor, a dead
+; actor, an actor not currently in a plain alive state (already bleeding
+; out, restrained, etc - this module does not stack on another life state),
+; or an actor already managed by this module. Never throws.
+Bool Function KnockoutActor(Actor akActor) global native
+
+; Ends a managed-unconscious state, automatically-timed or forced - the same
+; call either way. Safe and a harmless False on an actor this module was not
+; managing (nothing is touched). Dispatches OnActorWoke when it does wake a
+; managed actor. Never throws.
+Bool Function WakeActor(Actor akActor) global native
+
+; Is akActor currently managed-unconscious by THIS module? Distinct from the
+; engine's own IsUnconscious() - see the note above. None actor -> False.
+Bool Function IsManagedUnconscious(Actor akActor) global native
+
+; Registers a form whose script implements OnActorWoke(Actor akActor).
+Bool Function RegisterForActorWoke(Form akReceiver) global native
+
+; Reverses RegisterForActorWoke.
+Bool Function UnregisterForActorWoke(Form akReceiver) global native
+
+; Registers a ReferenceAlias whose script implements
+; OnActorWoke(Actor akActor). Needed for alias-bound consumers - see
+; RegisterForSpellTomeReadAlias above for why a Form-keyed registration
+; cannot reach an alias script.
+Bool Function RegisterForActorWokeAlias(Alias akAlias) global native
+
+; Reverses RegisterForActorWokeAlias.
+Bool Function UnregisterForActorWokeAlias(Alias akAlias) global native
+
+; Dispatched when a managed-unconscious actor wakes, automatically or
+; forced. A script that registered via RegisterForActorWoke or
+; RegisterForActorWokeAlias implements this to find out.
+Event OnActorWoke(Actor akActor)

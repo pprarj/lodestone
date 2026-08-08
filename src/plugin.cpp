@@ -45,6 +45,7 @@
 // RE/Skyrim.h and SKSE/SKSE.h come from PCH.h (force-included by CMake).
 #include "Core/BookFramework.h"
 #include "Core/CastTime.h"
+#include "Core/Incapacitation.h"
 #include "Core/Log.h"
 #include "Core/MagicScaling.h"
 #include "Core/Papyrus.h"
@@ -84,6 +85,14 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse) {
 
     spdlog::info("{} v{} loaded successfully.",
         Lodestone::Version::kProjectName, Lodestone::Version::kString);
+
+    // Cosave registration. This is a THIRD seam, distinct from the native
+    // dispatcher and from engine-hook installation on kDataLoaded: a save or
+    // load can happen well before kDataLoaded fires, so the callbacks have to
+    // be wired as early as the serialization interface is available. No
+    // other module in this plugin has needed this seam before Incapacitation
+    // - see Incapacitation.h for what it persists and why.
+    Lodestone::Core::Incapacitation::RegisterSerialization();
 
     // NO TRAMPOLINE IS RESERVED HERE ANY MORE.
     //

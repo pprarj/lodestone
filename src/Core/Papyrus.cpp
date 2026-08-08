@@ -11,6 +11,7 @@
 #include "CastTime.h"
 #include "ChannelInfo.h"
 #include "Detection.h"
+#include "Incapacitation.h"
 #include "MagicScaling.h"
 #include "PluginInfo.h"
 #include "SpellTomes.h"
@@ -36,6 +37,7 @@ namespace Lodestone::Core::Papyrus
 		ok &= MagicScaling::RegisterFuncs(a_vm);   // L3 - magic scaling
 		ok &= Detection::RegisterFuncs(a_vm);      // L-A - detection scaling
 		ok &= ChannelInfo::RegisterFuncs(a_vm);    // L0 - channel diagnostics
+		ok &= Incapacitation::RegisterFuncs(a_vm); // Hook A - managed knockout
 
 		if (ok) {
 			spdlog::info("Papyrus: all modules registered.");

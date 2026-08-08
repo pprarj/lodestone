@@ -15,7 +15,7 @@ cmake_minimum_required(VERSION 3.21)
 # DLL version - INDEPENDENT of the mod version on Nexus.
 project(
     Lodestone
-    VERSION 1.9.0
+    VERSION 1.10.0
     LANGUAGES CXX
 )
 
@@ -102,6 +102,7 @@ add_commonlibsse_plugin(
         src/Core/SpellTomes.cpp
         src/Core/MagicScaling.cpp
         src/Core/Detection.cpp
+        src/Core/Incapacitation.cpp
 )
 
 target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_23)
