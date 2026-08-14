@@ -35,6 +35,40 @@ namespace Lodestone::Core::Incapacitation
 		constexpr std::uint32_t kRecordType = 'INC1';
 		constexpr std::uint32_t kRecordVersion = 1;
 
+		// Reads an actor's life state.
+		//
+		// NEVER call a_actor->GetLifeState() directly, and the same goes for
+		// every other member inherited from ActorState, MagicTarget or
+		// ActorValueOwner. ActorState is a base class of Actor in the headers,
+		// but this DLL is built for SE, AE and VR at once, and in that
+		// configuration the compile-time layout is a stub that matches no
+		// runtime: Actor.h asserts sizeof(Actor) == 0xC0 for the multi-runtime
+		// build against 0x2B0 (SE, VR) and 0x2B8 (AE) for the real object, so
+		// no base subobject sits where the running game keeps it. Reaching one
+		// through the C++ hierarchy reads a wrong address that the compiler
+		// accepts and that nothing reports.
+		//
+		// The library provides the correct route and uses it itself
+		// (see src/RE/A/Actor.cpp, which never touches an inherited accessor
+		// directly). Actor declares:
+		//
+		//   RUNTIME_CAST_ACCESSOR_VERSIONED(ActorState, AsActorState,
+		//                                   SKSE::RUNTIME_SSE_1_6_629, 0xB8, 0xC0)
+		//
+		// which resolves the offset from the runtime version at call time.
+		//
+		// This is not a precaution written in advance. Version 1.10.0 shipped
+		// the direct call and every read landed on the same wrong address:
+		// KnockoutActor refused every actor in the game with a constant "life
+		// state 7", the same number for a chicken at 5/5 health and a
+		// blacksmith at 131/131, across six actors, two saves and four play
+		// sessions. A constant unrelated to the actor is the signature of this
+		// mistake.
+		RE::ACTOR_LIFE_STATE ReadLifeState(RE::Actor* a_actor)
+		{
+			return a_actor->AsActorState()->GetLifeState();
+		}
+
 		// -------------------------------------------------------------------
 		// Natives
 		//
@@ -65,10 +99,11 @@ namespace Lodestone::Core::Incapacitation
 				return false;
 			}
 
-			if (a_actor->GetLifeState() != RE::ACTOR_LIFE_STATE::kAlive) {
+			const auto lifeState = ReadLifeState(a_actor);
+			if (lifeState != RE::ACTOR_LIFE_STATE::kAlive) {
 				spdlog::warn("Incapacitation: KnockoutActor called on actor (0x{:08X}) not in kAlive "
 							 "(life state {}) - refused, this module does not stack on another life state.",
-					a_actor->GetFormID(), static_cast<std::uint32_t>(a_actor->GetLifeState()));
+					a_actor->GetFormID(), static_cast<std::uint32_t>(lifeState));
 				return false;
 			}
 
@@ -130,7 +165,7 @@ namespace Lodestone::Core::Incapacitation
 
 			if (!a_actor->IsDead()) {
 				try {
-					if (a_actor->GetLifeState() == RE::ACTOR_LIFE_STATE::kUnconcious) {
+					if (ReadLifeState(a_actor) == RE::ACTOR_LIFE_STATE::kUnconcious) {
 						a_actor->SetLifeState(RE::ACTOR_LIFE_STATE::kAlive);
 					}
 					// Forces the engine to re-evaluate the AI package even if
@@ -166,6 +201,27 @@ namespace Lodestone::Core::Incapacitation
 
 			std::lock_guard lock(g_registryLock);
 			return g_registry.contains(a_actor->GetFormID());
+		}
+
+		// Lodestone.GetActorLifeState(Actor) -> Int
+		//
+		// The raw ACTOR_LIFE_STATE of a_actor as a number. A diagnostic seam,
+		// not a gameplay call: it exists so a consumer can see, from Papyrus,
+		// the exact value KnockoutActor is judging, instead of inferring it
+		// from a refusal. Values: 0 alive, 1 dying, 2 dead, 3 unconscious,
+		// 4 reanimate, 5 recycle, 6 restrained, 7 essential down, 8 bleedout.
+		// None actor -> -1.
+		//
+		// It was added because the alternative cost four play sessions: the
+		// consumer had to instrument one Papyrus flag at a time to work out
+		// what the DLL was seeing, and every one of those flags was clean
+		// while the number the DLL read was wrong.
+		std::int32_t GetActorLifeState(RE::StaticFunctionTag*, RE::Actor* a_actor)
+		{
+			if (!a_actor) {
+				return -1;
+			}
+			return static_cast<std::int32_t>(ReadLifeState(a_actor));
 		}
 
 		// Lodestone.RegisterForActorWoke(Form) -> Bool
@@ -309,14 +365,15 @@ namespace Lodestone::Core::Incapacitation
 		a_vm->RegisterFunction("KnockoutActor", "Lodestone", KnockoutActor);
 		a_vm->RegisterFunction("WakeActor", "Lodestone", WakeActor);
 		a_vm->RegisterFunction("IsManagedUnconscious", "Lodestone", IsManagedUnconscious);
+		a_vm->RegisterFunction("GetActorLifeState", "Lodestone", GetActorLifeState);
 		a_vm->RegisterFunction("RegisterForActorWoke", "Lodestone", RegisterForActorWoke);
 		a_vm->RegisterFunction("UnregisterForActorWoke", "Lodestone", UnregisterForActorWoke);
 		a_vm->RegisterFunction("RegisterForActorWokeAlias", "Lodestone", RegisterForActorWokeAlias);
 		a_vm->RegisterFunction("UnregisterForActorWokeAlias", "Lodestone", UnregisterForActorWokeAlias);
 
 		spdlog::info("Incapacitation: natives registered (KnockoutActor, WakeActor, IsManagedUnconscious, "
-					 "RegisterForActorWoke, UnregisterForActorWoke, RegisterForActorWokeAlias, "
-					 "UnregisterForActorWokeAlias).");
+					 "GetActorLifeState, RegisterForActorWoke, UnregisterForActorWoke, "
+					 "RegisterForActorWokeAlias, UnregisterForActorWokeAlias).");
 		return true;
 	}
 

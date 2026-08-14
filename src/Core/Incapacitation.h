@@ -50,6 +50,7 @@
 //   Bool  Function KnockoutActor(Actor akActor) global native
 //   Bool  Function WakeActor(Actor akActor) global native
 //   Bool  Function IsManagedUnconscious(Actor akActor) global native
+//   Int   Function GetActorLifeState(Actor akActor) global native
 //   Bool  Function RegisterForActorWoke(Form akReceiver) global native
 //   Bool  Function UnregisterForActorWoke(Form akReceiver) global native
 //   Bool  Function RegisterForActorWokeAlias(Alias akAlias) global native
@@ -72,8 +73,9 @@ namespace Lodestone::Core::Incapacitation
 	// Called by Lodestone::Core::Papyrus::Register - never called directly.
 	//
 	// Registers: KnockoutActor, WakeActor, IsManagedUnconscious,
-	// RegisterForActorWoke, UnregisterForActorWoke, RegisterForActorWokeAlias,
-	// UnregisterForActorWokeAlias on the "Lodestone" script.
+	// GetActorLifeState, RegisterForActorWoke, UnregisterForActorWoke,
+	// RegisterForActorWokeAlias, UnregisterForActorWokeAlias on the
+	// "Lodestone" script.
 	//
 	// Returns false if any registration failed.
 	bool RegisterFuncs(RE::BSScript::IVirtualMachine* a_vm);

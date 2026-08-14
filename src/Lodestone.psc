@@ -268,7 +268,7 @@ Int Function GetChannelContributorCount(String asChannel) global native
 ; index, unknown channel name, or DLL absent -> "".
 String Function GetChannelContributorPlugin(String asChannel, Int aiIndex) global native
 
-; --- Incapacitation (added in DLL 1.10.0) ----------------------------------
+; --- Incapacitation (added in DLL 1.10.0, usable from 1.11.0) --------------
 ;
 ; A managed non-lethal knockout: mark an actor as managed-unconscious, query
 ; that state, and wake the actor - automatically (your own Papyrus timer) or
@@ -299,7 +299,11 @@ String Function GetChannelContributorPlugin(String asChannel, Int aiIndex) globa
 ; Registration for OnActorWoke is session-scoped (not saved) - re-register
 ; after each load, the same runtime model the other modules use.
 ;
-; Requires Lodestone.GetVersion() >= 1010000 (1.10.0) for every function below.
+; Requires Lodestone.GetVersion() >= 1011000 (1.11.0). The functions below
+; first appeared in 1.10.0, but KnockoutActor refused every actor in that
+; version - it read the life state through the wrong offset and saw a
+; constant. Gate on 1011000, not on 1010000: 1.10.0 answers the version check
+; and then knocks nobody out.
 
 ; Marks akActor as managed-unconscious: interrupts what it is doing and sets
 ; it to stop acting hostile. Refuses (returns False) a None actor, a dead
@@ -317,6 +321,17 @@ Bool Function WakeActor(Actor akActor) global native
 ; Is akActor currently managed-unconscious by THIS module? Distinct from the
 ; engine's own IsUnconscious() - see the note above. None actor -> False.
 Bool Function IsManagedUnconscious(Actor akActor) global native
+
+; The raw engine life state of akActor, as a number. This is a diagnostic
+; call, not a gameplay one: it exists so you can see the exact value
+; KnockoutActor is judging, instead of inferring it from a refusal.
+;
+;   0 alive   1 dying    2 dead        3 unconscious   4 reanimate
+;   5 recycle 6 restrained  7 essential down  8 bleedout
+;
+; KnockoutActor accepts 0 and refuses everything else. None actor -> -1.
+; Requires Lodestone.GetVersion() >= 1011000 (1.11.0).
+Int Function GetActorLifeState(Actor akActor) global native
 
 ; Registers a form whose script implements OnActorWoke(Actor akActor).
 Bool Function RegisterForActorWoke(Form akReceiver) global native

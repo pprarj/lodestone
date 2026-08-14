@@ -59,6 +59,30 @@ Bump it when the native API or native behavior changes. Not when a consumer ship
 
 ---
 
+## Reading engine object state
+
+### Never reach a base class of `Actor` through the C++ hierarchy.
+
+This DLL is built for SE, AE and VR from one binary. In that configuration CommonLibSSE-NG's compile-time layout is a stub that matches no runtime - `Actor.h` asserts `sizeof(Actor) == 0xC0` for the multi-runtime build against `0x2B0` (SE, VR) and `0x2B8` (AE) for the real object. No base subobject sits where the running game keeps it.
+
+So `a_actor->GetLifeState()` compiles, links, and reads a wrong address. Nothing reports it. Use the accessor the library generates for exactly this, and which the library's own code uses everywhere:
+
+| Reaching | Route |
+| -------- | ----- |
+| `ActorState` - life state, sneaking, sitting, weapon state, knock state | `a_actor->AsActorState()` |
+| `MagicTarget` | `a_actor->AsMagicTarget()` |
+| `ActorValueOwner` | `a_actor->AsActorValueOwner()` |
+| `Actor`'s own runtime members | `a_actor->GetActorRuntimeData()` |
+| `TESObjectREFR`'s runtime members | `a_refr->GetReferenceRuntimeData()` |
+
+The accessors are declared right above the members in `Actor.h` (`RUNTIME_CAST_ACCESSOR_VERSIONED`, `RUNTIME_DATA_ACCESSOR_VERSIONED_EX`) and resolve the offset from the runtime version at call time.
+
+**The symptom is a constant.** `Core/Incapacitation` shipped in 1.10.0 with the direct call, and `KnockoutActor` refused every actor in the game with the same "life state 7" - identical for a chicken at 5/5 health and a blacksmith at 131/131, across six actors, two saves and four play sessions. A value that does not vary with the actor is not a game state, it is a bad address. Four sessions went into proving that from the Papyrus side, because the DLL had no way to be asked directly; `Lodestone.GetActorLifeState` exists so the next one costs a single call.
+
+Methods called *on* `Actor` itself are fine - `SetLifeState`, `EvaluatePackage`, `InterruptCast`, `StopCombat` and the rest resolve through the Address Library and take `this` as the engine expects. It is member and base-class *data* access that has to go through an accessor.
+
+---
+
 ## Engine hooks
 
 ### The target decides the mechanism. It is not a preference.
