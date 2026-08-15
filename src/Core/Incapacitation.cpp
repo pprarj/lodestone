@@ -9,6 +9,7 @@
 #include "Incapacitation.h"
 
 #include <mutex>
+#include <unordered_map>
 #include <unordered_set>
 
 #include "SKSE/RegistrationSet.h"
@@ -33,7 +34,15 @@ namespace Lodestone::Core::Incapacitation
 		//
 		// NOT PERSISTED, on purpose - see the cosave section below for the
 		// reasoning and what the consumer has to do about it.
-		std::unordered_set<RE::FormID> g_fallen;
+		//
+		// The value counts how many times the get-up hook has stopped the engine
+		// from standing this actor back up. It is the instrument that answers
+		// "did the fall hold", and it answers better than any state field can:
+		// a non-zero count is the engine actively trying to end the knockout and
+		// being refused, which is the capability working. A count of zero at
+		// recovery means the engine never tried - and if the actor did not stay
+		// down either, that points at the hook rather than at the fall.
+		std::unordered_map<RE::FormID, std::uint32_t> g_fallen;
 
 		// How far above the actor's own origin the knockdown impulse comes
 		// from, in Skyrim units, and how hard it hits.
@@ -386,9 +395,11 @@ namespace Lodestone::Core::Incapacitation
 				alreadyFallen = g_fallen.contains(formID);
 			}
 
+			// IsDownKnockState rather than "anything but kNormal": kGetUp is an
+			// actor on its way back to its feet, which is the opposite of a
+			// reason to skip knocking it down.
 			const auto guardKnockState = ReadKnockState(a_actor);
-			const bool engineHasItDown = a_actor->IsInRagdollState() &&
-										 guardKnockState != RE::KNOCK_STATE_ENUM::kNormal;
+			const bool engineHasItDown = a_actor->IsInRagdollState() && IsDownKnockState(guardKnockState);
 
 			if (alreadyFallen || engineHasItDown) {
 				// Two distinct messages on purpose: "this module already dropped
@@ -408,7 +419,7 @@ namespace Lodestone::Core::Incapacitation
 				}
 
 				std::lock_guard lock(g_registryLock);
-				g_fallen.insert(formID);
+				g_fallen.emplace(formID, 0U);
 				return true;
 			}
 
@@ -426,57 +437,40 @@ namespace Lodestone::Core::Incapacitation
 
 				process->KnockExplosion(a_actor, origin, kFallImpulse);
 
-				// THE ENGINE DROPS THE ACTOR AND THEN FORGETS IT DID.
+				// NOTHING IS WRITTEN TO knockState HERE, ON PURPOSE, AND THIS IS
+				// NOT AN OVERSIGHT. 1.12.2 wrote kDown at this exact point. The
+				// write landed - the log read the field straight back and saw 7 -
+				// and it changed nothing: the actor still stood up within a second
+				// or two, and by the end of the window the field was back at 0.
+				// Three targets out of three.
 				//
-				// 1.12.0 deliberately did not write this field on the way down,
-				// on the reasoning that the engine performs the transition and
-				// therefore knows better than we do which state is consistent
-				// with it. The play test answered that: KnockExplosion applies
-				// the physics - the actor visibly falls - and leaves knockState
-				// at kNormal. With no state, nothing holds the actor down. The
-				// ragdoll settles and the engine's own recovery stands it back
-				// up within a second or two, while the life state keeps it
-				// pacified, so it ends up upright and inert. Three targets out
-				// of three, log line `knock state 0 -> 0`.
+				// So knockState is an OUTPUT of the engine's state machine, not an
+				// input. Writing it describes what the engine has already decided
+				// and gets overwritten when its recovery advances. There is no
+				// third value worth trying: kOut instead of kDown would relabel a
+				// field the engine discards either way.
 				//
-				// This is not V1's forbidden write. D2 refused to set knockState
-				// COLD - without a transition, which is what risks the T-pose.
-				// Here the transition has already happened and this only records
-				// what is on screen. The write path itself is proven: recovery
-				// has been writing kGetUp since 1.12.0 and ran twice in that same
-				// test with nothing wrong.
+				// What holds the actor down is the hook below, which stops the
+				// engine from starting the get-up at all. That is why the write
+				// is gone rather than kept as a belt-and-braces: keeping it would
+				// have made KnockoutRecover write kGetUp into a life state 3 actor
+				// on the way out, which is a real interaction nobody has tested,
+				// bought for a field that provably does nothing.
 				//
-				// kDown over kOut, on the only evidence available rather than on
-				// the names: the published reference implementation in this space
-				// writes kDown to hold an actor on the ground, and it works in
-				// game. kOut reads better - it pairs with kOutLeadIn, which
-				// suggests a sustained state - but that is name-reading, and the
-				// library documents none of these values. If kDown does not hold,
-				// kOut is the next thing to try, and it is a one-word change.
-				//
-				// Only written if the engine left kNormal. If it ever does pick a
-				// state, it is better informed than this line is.
-				const auto engineKnock = ReadKnockState(a_actor);
-				if (engineKnock == RE::KNOCK_STATE_ENUM::kNormal) {
-					a_actor->AsActorState()->actorState1.knockState = RE::KNOCK_STATE_ENUM::kDown;
-				}
-
 				// Z goes in the log so the two ends of a knockout can be compared
 				// against each other. It is NOT a check on this call: the physics
 				// runs over the frames after this returns, so the actor has not
-				// moved yet by the time this line is written. The height here
-				// against the height in KnockoutRecover is what shows whether the
-				// body was still on the ground at the end of the window.
-				spdlog::info("Incapacitation: KnockoutFall on actor (0x{:08X}) - knock state {} -> {} (engine) "
-							 "-> {} (written), life state {} -> {}, z {:.1f}, impulse {} from {} units above.",
+				// moved yet by the time this line is written.
+				spdlog::info("Incapacitation: KnockoutFall on actor (0x{:08X}) - knock state {} -> {}, "
+							 "life state {} -> {}, z {:.1f}, impulse {} from {} units above. Get-up "
+							 "suppression is now armed for this actor.",
 					formID, static_cast<std::uint32_t>(guardKnockState),
-					static_cast<std::uint32_t>(engineKnock),
 					static_cast<std::uint32_t>(ReadKnockState(a_actor)),
 					static_cast<std::uint32_t>(beforeLife), static_cast<std::uint32_t>(ReadLifeState(a_actor)),
 					position.z, kFallImpulse, kFallOriginHeight);
 
 				std::lock_guard lock(g_registryLock);
-				g_fallen.insert(formID);
+				g_fallen.emplace(formID, 0U);
 			} catch (...) {
 				spdlog::error("Incapacitation: KnockoutFall threw on actor (0x{:08X}) - not recorded as fallen.",
 					formID);
@@ -510,10 +504,18 @@ namespace Lodestone::Core::Incapacitation
 
 			const auto formID = a_actor->GetFormID();
 
-			bool wasFallen = false;
+			// The count has to come out in the same locked step that removes the
+			// entry - reading it afterwards would always find nothing, because
+			// the entry is gone by then.
+			bool          wasFallen = false;
+			std::uint32_t blocked = 0;
 			{
 				std::lock_guard lock(g_registryLock);
-				wasFallen = g_fallen.erase(formID) > 0;
+				if (const auto it = g_fallen.find(formID); it != g_fallen.end()) {
+					wasFallen = true;
+					blocked = it->second;
+					g_fallen.erase(it);
+				}
 			}
 
 			if (!wasFallen) {
@@ -530,36 +532,36 @@ namespace Lodestone::Core::Incapacitation
 			try {
 				const auto beforeKnock = ReadKnockState(a_actor);
 
-				// THIS IS WHERE THE LOG ANSWERS "DID THE FALL HOLD".
+				// THIS IS WHERE THE LOG ANSWERS "DID THE FALL HOLD", AND THE
+				// ANSWER MOVED.
 				//
-				// Nothing at the moment of the fall can answer it: the physics
-				// runs over the frames after KnockoutFall returns, so every
-				// reading taken there describes an actor that has not moved yet.
-				// Worse, IsInRagdollState() is true for any actor in kUnconcious,
-				// which made `knock state 0 -> 0, ragdoll true` mean both "never
-				// fell" and "fell and stood back up" - two opposite outcomes
-				// printing the same line, separated only by someone watching the
-				// screen. That ambiguity cost a whole reading of the 1.12.1 test.
+				// 1.12.2 asked knockState this question and knockState was the
+				// wrong witness: it read kNormal at recovery whether the actor had
+				// never fallen or had fallen and got back up. The count is a
+				// better witness because it records an ACTION rather than a state
+				// - every increment is the engine trying to end the knockout and
+				// being refused, which nothing else can produce.
 				//
-				// The end of the window is where the difference becomes legible.
-				// KnockoutFall leaves the actor in kDown; if this call finds
-				// kNormal instead, nothing else in this module cleared it, so the
-				// engine stood the actor up on its own and the fall did not hold.
-				// That is a failed capability rather than a normal path, so it
-				// warns.
-				if (!IsDownKnockState(beforeKnock)) {
-					spdlog::warn("Incapacitation: KnockoutRecover on actor (0x{:08X}) - this module knocked it "
-								 "down but the knock state came back {} instead of a down state. The actor got "
-								 "up on its own during the window; the fall did not hold.",
-						formID, static_cast<std::uint32_t>(beforeKnock));
+				// Zero is the reading that deserves attention. It means the engine
+				// never once tried to stand this actor up, which is not what the
+				// last three rounds showed it doing, so the likely explanation is
+				// that the hook is not on the function it is supposed to be on.
+				// That is a different failure from the fall not holding, and worth
+				// telling apart in the log rather than after another play session.
+				if (blocked == 0) {
+					spdlog::warn("Incapacitation: KnockoutRecover on actor (0x{:08X}) - the get-up hook never "
+								 "fired for this actor during the whole window. The engine did not try to stand "
+								 "it up, which the last rounds say it should have - suspect the hook, not the "
+								 "fall.",
+						formID);
 				}
 
-				// Only written when the actor is still down. If the engine is
-				// already unwinding the state, it is better informed than this
-				// call is.
-				if (IsDownKnockState(beforeKnock)) {
-					a_actor->AsActorState()->actorState1.knockState = RE::KNOCK_STATE_ENUM::kGetUp;
-				}
+				// NOTHING IS WRITTEN TO knockState HERE EITHER, and for the same
+				// reason it is no longer written on the way down: the field is not
+				// what the engine reads. Removing the write also retires an
+				// untested interaction the consumer flagged - it calls this before
+				// WakeActor, so the write would have landed on an actor still in
+				// life state 3. Nobody has to reorder anything now.
 
 				// The 3D resync is the half with no Papyrus equivalent, and the
 				// reference implementation in this space treats it - rather than
@@ -573,9 +575,10 @@ namespace Lodestone::Core::Incapacitation
 				// Z against the height KnockoutFall logged for the same actor:
 				// still low means the body was on the ground when the window
 				// ended, back to standing height means it had got up.
-				spdlog::info("Incapacitation: KnockoutRecover on actor (0x{:08X}) - knock state {} -> {}, "
-							 "z {:.1f}, ragdoll {}, 3D resynced and package re-evaluated.",
-					formID, static_cast<std::uint32_t>(beforeKnock),
+				spdlog::info("Incapacitation: KnockoutRecover on actor (0x{:08X}) - blocked {} get-up "
+							 "attempt(s), knock state {} -> {}, z {:.1f}, ragdoll {}, 3D resynced and package "
+							 "re-evaluated.",
+					formID, blocked, static_cast<std::uint32_t>(beforeKnock),
 					static_cast<std::uint32_t>(ReadKnockState(a_actor)), a_actor->GetPosition().z,
 					a_actor->IsInRagdollState());
 			} catch (...) {
@@ -629,6 +632,90 @@ namespace Lodestone::Core::Incapacitation
 			}
 			return g_wokeReg.Unregister(a_alias);
 		}
+
+		// -------------------------------------------------------------------
+		// The get-up hook
+		//
+		// This is what holds a knocked-down actor on the ground, after two
+		// versions failed to do it by other means. KnockExplosion drops the
+		// actor and works, but the engine stands it back up a second or two
+		// later; writing knockState to say "this actor is down" did nothing,
+		// because that field is what the engine reports rather than what it
+		// reads. The thing to stop was never the description, it was the
+		// decision - and InitiateGetUpPackage is where the decision is taken.
+		//
+		// THIS IS A SUPPRESSING HOOK, the exception CONVENTIONS.md allows, and
+		// it has to meet that section's three conditions:
+		//
+		//   1. Only the suppressing path skips the original. Every actor this
+		//      module is not currently holding down calls it and behaves
+		//      exactly as vanilla - the overwhelming majority of calls.
+		//   2. The effect cannot be undone afterwards. Once the get-up package
+		//      is running, the actor is standing; there is no un-get-up, and
+		//      putting it back down means a second impulse, which is the
+		//      visual mess this design avoids.
+		//   3. Every skipped side effect accounted for - AND THIS ONE IS ONLY
+		//      PARTLY DISCHARGED, which is worth saying rather than glossing.
+		//      The library exposes the declaration but not the body, so what
+		//      else this function does on the way to starting the package is
+		//      not known here. What bounds the risk is scope: suppression
+		//      applies only to actors this module knocked down, only while
+		//      the consumer holds the knockout, and it is released the moment
+		//      the actor leaves the fallen set - including on death. If it
+		//      turns out to do something else that matters, the symptom will
+		//      be confined to knocked-out actors.
+		//
+		// THE INDEX DIVERGES BETWEEN RUNTIMES AND THE TWO VALUES COLLIDE.
+		// CommonLibSSE-NG resolves it at call time and states both numbers
+		// (src/RE/A/Actor.cpp:1993):
+		//
+		//     RelocateVirtual<...>(0x0DE, 0x0E0, this);   // SE/AE, VR
+		//
+		// write_vfunc takes a single index and the library offers no helper
+		// that installs across both, so the branch below is written by hand.
+		// Getting it backwards does not crash: 0x0E0 on SE/AE is UpdateAlpha,
+		// so the swap would quietly hook actor transparency and leave the
+		// knockout looking broken for reasons nothing would connect to this.
+		// -------------------------------------------------------------------
+
+		struct InitiateGetUpPackageHook
+		{
+			static void thunk(RE::Actor* a_this)
+			{
+				if (a_this) {
+					try {
+						const auto formID = a_this->GetFormID();
+
+						std::lock_guard lock(g_registryLock);
+						if (const auto it = g_fallen.find(formID); it != g_fallen.end()) {
+							++it->second;
+
+							// Only the first one is written. The engine may
+							// retry every time it re-evaluates, and a line per
+							// attempt would bury the log of a long knockout;
+							// the total is reported once, by KnockoutRecover.
+							if (it->second == 1) {
+								spdlog::info("Incapacitation: blocked the engine from standing actor "
+											 "(0x{:08X}) back up. This module is holding it down; further "
+											 "attempts are counted, not logged.",
+									formID);
+							}
+
+							return;
+						}
+					} catch (...) {
+						// Fall through to the original. An actor that stays
+						// down because this threw is the failure mode with no
+						// way back, so the safe direction is always vanilla.
+						spdlog::error("Incapacitation: the get-up hook threw - letting the original run.");
+					}
+				}
+
+				func(a_this);
+			}
+
+			static inline REL::Relocation<decltype(thunk)> func;
+		};
 
 		// -------------------------------------------------------------------
 		// Death sink
@@ -845,11 +932,40 @@ namespace Lodestone::Core::Incapacitation
 		if (!holder) {
 			spdlog::error("Incapacitation: no script event source holder - a managed actor that dies will "
 						  "stay in the registry, and IsManagedUnconscious will answer true for its corpse.");
-			return;
+		} else {
+			holder->AddEventSink<RE::TESDeathEvent>(DeathSink::GetSingleton());
+			spdlog::info("Incapacitation: death sink registered - a managed actor that dies leaves the "
+						 "registry.");
 		}
 
-		holder->AddEventSink<RE::TESDeathEvent>(DeathSink::GetSingleton());
-		spdlog::info("Incapacitation: death sink registered - a managed actor that dies leaves the registry.");
+		try {
+			// [0] is Actor's primary vtable. InitiateGetUpPackage is declared in
+			// Actor's own "add" section rather than as an override of one of the
+			// secondary bases, and new virtuals go to the primary vtable.
+			REL::Relocation<std::uintptr_t> vtbl{ RE::VTABLE_Actor[0] };
+
+			// Both numbers come from the library's own call-time resolution in
+			// src/RE/A/Actor.cpp:1993. Do not collapse this to one constant, and
+			// do not swap the arms - see the note on the hook above for what a
+			// swap silently hooks instead.
+			const std::size_t idx = REL::Module::IsVR() ? 0x0E0 : 0x0DE;
+
+			InitiateGetUpPackageHook::func =
+				vtbl.write_vfunc(idx, InitiateGetUpPackageHook::thunk);
+
+			spdlog::info("Incapacitation: get-up hook installed on the Actor vtable "
+						 "(InitiateGetUpPackage @0x{:X}, {} runtime). Passthrough for every actor this "
+						 "module is not holding down.",
+				idx, REL::Module::IsVR() ? "VR" : "SE/AE");
+		} catch (const std::exception& e) {
+			spdlog::error("Incapacitation: failed to install the get-up hook: {} - KnockoutFall will still "
+						  "drop an actor, but the engine will stand it back up after a moment.",
+				e.what());
+		} catch (...) {
+			spdlog::error("Incapacitation: failed to install the get-up hook (unknown exception) - "
+						  "KnockoutFall will still drop an actor, but the engine will stand it back up "
+						  "after a moment.");
+		}
 	}
 
 	void RegisterSerialization()

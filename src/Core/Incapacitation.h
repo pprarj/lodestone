@@ -15,17 +15,21 @@
 // durable even if that ever changes, and it is what answers "did I do this"
 // rather than "is this actor stunned by anything right now".
 //
-// NO ENGINE HOOK. Applying and reverting the state is a handful of calls
-// already exposed publicly by RE::Actor and RE::AIProcess (SetLifeState,
-// EvaluatePackage, InterruptCast, EndInterruptPackage, StopCombat,
-// StopInteractingQuick, KnockExplosion, Update3DModel,
-// UpdateActor3DPosition) - not interception of anything. Nothing here is
-// detoured and no address is involved, so the hooking rules in
-// CONVENTIONS.md do not apply to this module.
+// ONE ENGINE HOOK, AND IT ARRIVED LATE. Most of what this module does is
+// plain calls the engine already exposes (SetLifeState, EvaluatePackage,
+// the interrupts, KnockExplosion, Update3DModel, UpdateActor3DPosition).
+// V1 had no hook at all and said so here.
 //
-// It does have an Install(), which the V1 of this module did not: the death
-// sink below needs the script event source to exist. That is a lifecycle
-// requirement, not a hook.
+// The physical fall is what changed that. Dropping an actor works; keeping
+// it down does not follow from dropping it, because the engine decides on
+// its own to stand the actor back up a second or two later. Two versions
+// tried to prevent that by describing the actor as down - writing
+// knockState - and neither worked: that field is the engine's output, not
+// its input. So the module now hooks Actor::InitiateGetUpPackage and
+// suppresses it for actors it is holding down, which is a suppressing hook
+// under the exception in CONVENTIONS.md. The reasoning, the three
+// conditions and the runtime-dependent vtable index are all at the hook
+// itself in the .cpp.
 //
 // NO NATIVE TIMER. Duration is a balance decision, and CONVENTIONS.md is
 // explicit that policy stays out of this DLL. The consumer runs its own
@@ -121,16 +125,18 @@ namespace Lodestone::Core::Incapacitation
 	// Returns false if any registration failed.
 	bool RegisterFuncs(RE::BSScript::IVirtualMachine* a_vm);
 
-	// Registers the TESDeathEvent sink that drops a dying actor from this
-	// module's sets. Installs no hook and detours nothing - the name matches
-	// the other modules' lifecycle seam because it is called from the same
-	// place, on kDataLoaded, which is where the script event source is
-	// reliably available.
+	// Wires the two things this module needs the game to be up for: the
+	// TESDeathEvent sink that drops a dying actor from its sets, and the
+	// vtable hook on Actor::InitiateGetUpPackage that keeps a knocked-down
+	// actor from standing back up. Called on kDataLoaded from plugin.cpp,
+	// alongside the other modules' hook installation.
 	//
-	// Never throws. If the event source cannot be reached it logs and returns:
-	// the module keeps working, but a managed actor that dies stays in the
-	// registry, which is the exact defect this exists to prevent - so the log
-	// line says that rather than reporting a generic failure.
+	// Never throws, and the two halves are independent: either can fail
+	// without taking the other with it. Each failure logs what specifically
+	// stops working - a dead actor stuck in the registry, or a fall that the
+	// engine undoes after a moment - rather than a generic install error,
+	// because those are the symptoms someone would otherwise be debugging
+	// from the wrong end.
 	void Install();
 
 	// Wires the SKSE cosave callbacks (save/load/revert) that persist the set
