@@ -420,31 +420,60 @@ namespace Lodestone::Core::Incapacitation
 			}
 
 			try {
-				// Instrumented on purpose, at info so it survives a Release
-				// build. Nothing here has been seen in game yet: this is the
-				// only way the next session can tell whether KnockExplosion
-				// moved knockState at all, which value it chose, and whether
-				// the ragdoll actually engaged. Called once per takedown, so
-				// the cost does not matter.
 				const auto beforeLife = ReadLifeState(a_actor);
 				const auto position = a_actor->GetPosition();
 				const RE::NiPoint3 origin{ position.x, position.y, position.z + kFallOriginHeight };
 
 				process->KnockExplosion(a_actor, origin, kFallImpulse);
 
-				// Life state is in here because of the question this call still
-				// cannot answer on its own: KnockExplosion has never been seen
-				// running against an actor already in kUnconcious, which is
-				// where KnockoutActor leaves it and therefore the only state it
-				// is ever called in. If the knock state does not move, the next
-				// question is whether the life state is why - and that is one
-				// play session away only if the number is in the log.
-				spdlog::info("Incapacitation: KnockoutFall on actor (0x{:08X}) - knock state {} -> {}, "
-							 "life state {} -> {}, ragdoll {}, impulse {} from {} units above.",
+				// THE ENGINE DROPS THE ACTOR AND THEN FORGETS IT DID.
+				//
+				// 1.12.0 deliberately did not write this field on the way down,
+				// on the reasoning that the engine performs the transition and
+				// therefore knows better than we do which state is consistent
+				// with it. The play test answered that: KnockExplosion applies
+				// the physics - the actor visibly falls - and leaves knockState
+				// at kNormal. With no state, nothing holds the actor down. The
+				// ragdoll settles and the engine's own recovery stands it back
+				// up within a second or two, while the life state keeps it
+				// pacified, so it ends up upright and inert. Three targets out
+				// of three, log line `knock state 0 -> 0`.
+				//
+				// This is not V1's forbidden write. D2 refused to set knockState
+				// COLD - without a transition, which is what risks the T-pose.
+				// Here the transition has already happened and this only records
+				// what is on screen. The write path itself is proven: recovery
+				// has been writing kGetUp since 1.12.0 and ran twice in that same
+				// test with nothing wrong.
+				//
+				// kDown over kOut, on the only evidence available rather than on
+				// the names: the published reference implementation in this space
+				// writes kDown to hold an actor on the ground, and it works in
+				// game. kOut reads better - it pairs with kOutLeadIn, which
+				// suggests a sustained state - but that is name-reading, and the
+				// library documents none of these values. If kDown does not hold,
+				// kOut is the next thing to try, and it is a one-word change.
+				//
+				// Only written if the engine left kNormal. If it ever does pick a
+				// state, it is better informed than this line is.
+				const auto engineKnock = ReadKnockState(a_actor);
+				if (engineKnock == RE::KNOCK_STATE_ENUM::kNormal) {
+					a_actor->AsActorState()->actorState1.knockState = RE::KNOCK_STATE_ENUM::kDown;
+				}
+
+				// Z goes in the log so the two ends of a knockout can be compared
+				// against each other. It is NOT a check on this call: the physics
+				// runs over the frames after this returns, so the actor has not
+				// moved yet by the time this line is written. The height here
+				// against the height in KnockoutRecover is what shows whether the
+				// body was still on the ground at the end of the window.
+				spdlog::info("Incapacitation: KnockoutFall on actor (0x{:08X}) - knock state {} -> {} (engine) "
+							 "-> {} (written), life state {} -> {}, z {:.1f}, impulse {} from {} units above.",
 					formID, static_cast<std::uint32_t>(guardKnockState),
+					static_cast<std::uint32_t>(engineKnock),
 					static_cast<std::uint32_t>(ReadKnockState(a_actor)),
 					static_cast<std::uint32_t>(beforeLife), static_cast<std::uint32_t>(ReadLifeState(a_actor)),
-					a_actor->IsInRagdollState(), kFallImpulse, kFallOriginHeight);
+					position.z, kFallImpulse, kFallOriginHeight);
 
 				std::lock_guard lock(g_registryLock);
 				g_fallen.insert(formID);
@@ -501,11 +530,33 @@ namespace Lodestone::Core::Incapacitation
 			try {
 				const auto beforeKnock = ReadKnockState(a_actor);
 
-				// Only written when the actor is still down. If KnockExplosion
-				// left the field somewhere the engine is already unwinding, the
-				// engine is better informed than this call is - see the log
-				// line, which is what will tell the next session whether this
-				// write was needed at all.
+				// THIS IS WHERE THE LOG ANSWERS "DID THE FALL HOLD".
+				//
+				// Nothing at the moment of the fall can answer it: the physics
+				// runs over the frames after KnockoutFall returns, so every
+				// reading taken there describes an actor that has not moved yet.
+				// Worse, IsInRagdollState() is true for any actor in kUnconcious,
+				// which made `knock state 0 -> 0, ragdoll true` mean both "never
+				// fell" and "fell and stood back up" - two opposite outcomes
+				// printing the same line, separated only by someone watching the
+				// screen. That ambiguity cost a whole reading of the 1.12.1 test.
+				//
+				// The end of the window is where the difference becomes legible.
+				// KnockoutFall leaves the actor in kDown; if this call finds
+				// kNormal instead, nothing else in this module cleared it, so the
+				// engine stood the actor up on its own and the fall did not hold.
+				// That is a failed capability rather than a normal path, so it
+				// warns.
+				if (!IsDownKnockState(beforeKnock)) {
+					spdlog::warn("Incapacitation: KnockoutRecover on actor (0x{:08X}) - this module knocked it "
+								 "down but the knock state came back {} instead of a down state. The actor got "
+								 "up on its own during the window; the fall did not hold.",
+						formID, static_cast<std::uint32_t>(beforeKnock));
+				}
+
+				// Only written when the actor is still down. If the engine is
+				// already unwinding the state, it is better informed than this
+				// call is.
 				if (IsDownKnockState(beforeKnock)) {
 					a_actor->AsActorState()->actorState1.knockState = RE::KNOCK_STATE_ENUM::kGetUp;
 				}
@@ -519,10 +570,14 @@ namespace Lodestone::Core::Incapacitation
 				a_actor->UpdateActor3DPosition();
 				a_actor->EvaluatePackage(true, true);
 
+				// Z against the height KnockoutFall logged for the same actor:
+				// still low means the body was on the ground when the window
+				// ended, back to standing height means it had got up.
 				spdlog::info("Incapacitation: KnockoutRecover on actor (0x{:08X}) - knock state {} -> {}, "
-							 "ragdoll {}, 3D resynced and package re-evaluated.",
+							 "z {:.1f}, ragdoll {}, 3D resynced and package re-evaluated.",
 					formID, static_cast<std::uint32_t>(beforeKnock),
-					static_cast<std::uint32_t>(ReadKnockState(a_actor)), a_actor->IsInRagdollState());
+					static_cast<std::uint32_t>(ReadKnockState(a_actor)), a_actor->GetPosition().z,
+					a_actor->IsInRagdollState());
 			} catch (...) {
 				spdlog::error("Incapacitation: KnockoutRecover threw on actor (0x{:08X}) - fallen-set entry "
 							  "already removed, so this cannot leave the actor stuck as far as this module "
