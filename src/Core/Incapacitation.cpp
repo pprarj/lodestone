@@ -358,13 +358,25 @@ namespace Lodestone::Core::Incapacitation
 				return false;
 			}
 
-			// Two independent guards against a second impulse, and the first one
-			// is the one that has to hold. Asking the engine whether the actor is
-			// ragdolled only works if KnockExplosion actually engages the ragdoll,
-			// which has not been observed yet - if it does not, that check answers
-			// false on an actor this module just knocked down, and the next call
-			// stacks another impulse on it. This module's own record of who it
-			// dropped does not depend on the engine agreeing.
+			// Two guards against a second impulse, and they are NOT interchangeable.
+			//
+			// 1.12.0 combined them with an OR and the fall never happened once.
+			// IsInRagdollState() answers true for an actor in kUnconcious, which
+			// is the life state KnockoutActor just set - and this native refuses
+			// an actor it is not already managing, so every call arrives in
+			// exactly that state. The weak guard therefore fired on 100% of
+			// calls, by construction of the API, and KnockExplosion was never
+			// reached. Three calls out of three in the first play test, with the
+			// contradiction visible inside one log line: ragdoll true, knock
+			// state 0, recorded false. An actor genuinely on the ground does not
+			// have a knock state of zero.
+			//
+			// So the module's own record decides on its own, and the engine's
+			// opinion only counts when the knock state corroborates it. That
+			// second case is a real one worth keeping - an actor another mod
+			// knocked down should not get a second impulse from here - but it
+			// has to be a state the engine actually put the actor in, not a
+			// side effect of the life state this module set a moment ago.
 			//
 			// After a load the record is empty by design, so the consumer's
 			// reapply still goes through. That is the case it exists for.
@@ -374,11 +386,27 @@ namespace Lodestone::Core::Incapacitation
 				alreadyFallen = g_fallen.contains(formID);
 			}
 
-			if (alreadyFallen || a_actor->IsInRagdollState()) {
-				spdlog::info("Incapacitation: KnockoutFall on actor (0x{:08X}) - already down (recorded {}, "
-							 "ragdoll {}, knock state {}), no second impulse applied.",
-					formID, alreadyFallen, a_actor->IsInRagdollState(),
-					static_cast<std::uint32_t>(ReadKnockState(a_actor)));
+			const auto guardKnockState = ReadKnockState(a_actor);
+			const bool engineHasItDown = a_actor->IsInRagdollState() &&
+										 guardKnockState != RE::KNOCK_STATE_ENUM::kNormal;
+
+			if (alreadyFallen || engineHasItDown) {
+				// Two distinct messages on purpose: "this module already dropped
+				// it" and "something else did" are different situations, and a
+				// shared message is what made the 1.12.0 defect need a play
+				// session to see instead of a log line.
+				if (alreadyFallen) {
+					spdlog::info("Incapacitation: KnockoutFall on actor (0x{:08X}) - this module already "
+								 "knocked it down (knock state {}, ragdoll {}), no second impulse applied.",
+						formID, static_cast<std::uint32_t>(guardKnockState), a_actor->IsInRagdollState());
+				} else {
+					spdlog::info("Incapacitation: KnockoutFall on actor (0x{:08X}) - already on the ground "
+								 "from somewhere else (knock state {}, life state {}), no impulse applied. "
+								 "Recording it as fallen so KnockoutRecover will bring it back up.",
+						formID, static_cast<std::uint32_t>(guardKnockState),
+						static_cast<std::uint32_t>(ReadLifeState(a_actor)));
+				}
+
 				std::lock_guard lock(g_registryLock);
 				g_fallen.insert(formID);
 				return true;
@@ -398,16 +426,24 @@ namespace Lodestone::Core::Incapacitation
 				// moved knockState at all, which value it chose, and whether
 				// the ragdoll actually engaged. Called once per takedown, so
 				// the cost does not matter.
-				const auto beforeKnock = ReadKnockState(a_actor);
+				const auto beforeLife = ReadLifeState(a_actor);
 				const auto position = a_actor->GetPosition();
 				const RE::NiPoint3 origin{ position.x, position.y, position.z + kFallOriginHeight };
 
 				process->KnockExplosion(a_actor, origin, kFallImpulse);
 
-				const auto afterKnock = ReadKnockState(a_actor);
+				// Life state is in here because of the question this call still
+				// cannot answer on its own: KnockExplosion has never been seen
+				// running against an actor already in kUnconcious, which is
+				// where KnockoutActor leaves it and therefore the only state it
+				// is ever called in. If the knock state does not move, the next
+				// question is whether the life state is why - and that is one
+				// play session away only if the number is in the log.
 				spdlog::info("Incapacitation: KnockoutFall on actor (0x{:08X}) - knock state {} -> {}, "
-							 "ragdoll {}, impulse {} from {} units above.",
-					formID, static_cast<std::uint32_t>(beforeKnock), static_cast<std::uint32_t>(afterKnock),
+							 "life state {} -> {}, ragdoll {}, impulse {} from {} units above.",
+					formID, static_cast<std::uint32_t>(guardKnockState),
+					static_cast<std::uint32_t>(ReadKnockState(a_actor)),
+					static_cast<std::uint32_t>(beforeLife), static_cast<std::uint32_t>(ReadLifeState(a_actor)),
 					a_actor->IsInRagdollState(), kFallImpulse, kFallOriginHeight);
 
 				std::lock_guard lock(g_registryLock);
