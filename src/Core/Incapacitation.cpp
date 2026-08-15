@@ -24,6 +24,37 @@ namespace Lodestone::Core::Incapacitation
 		std::mutex                     g_registryLock;
 		std::unordered_set<RE::FormID> g_registry;
 
+		// The actors this module has physically knocked down, guarded by the
+		// same lock. Deliberately a SECOND set rather than a flag on the first:
+		// "managed-unconscious" and "physically on the ground" are not the same
+		// state and do not begin or end together. KnockoutRecover has to work
+		// after WakeActor already removed the actor from g_registry, or the two
+		// natives could only ever be called in one order.
+		//
+		// NOT PERSISTED, on purpose - see the cosave section below for the
+		// reasoning and what the consumer has to do about it.
+		std::unordered_set<RE::FormID> g_fallen;
+
+		// How far above the actor's own origin the knockdown impulse comes
+		// from, in Skyrim units, and how hard it hits.
+		//
+		// These are NOT balance numbers and never become parameters. The
+		// consumer has exactly one requirement of this call - the target goes
+		// down - and no opinion about how hard. A float on the signature would
+		// turn "make it work" into "decide how it looks", which is policy, and
+		// policy does not live in this DLL. Duration is the balance decision
+		// here and it is already the consumer's, as it was in V1.
+		//
+		// UNMEASURED. Both values are conservative starting points, not
+		// observations: KnockExplosion pushes away from a_location, so an
+		// origin above the actor drives the impulse downward - a collapse
+		// rather than a launch - and a small magnitude fails by doing too
+		// little rather than by throwing a body across the room. The
+		// instrumented log below exists to calibrate them in game. Do not
+		// read these as tuned.
+		constexpr float kFallOriginHeight = 64.0F;
+		constexpr float kFallImpulse = 1.0F;
+
 		// Dispatches OnActorWoke to every registered script. Same shape and
 		// same dispatch mechanism (QueueEvent, off the caller's stack) as
 		// SpellTomes' OnSpellTomeRead - validated in game there already.
@@ -67,6 +98,43 @@ namespace Lodestone::Core::Incapacitation
 		RE::ACTOR_LIFE_STATE ReadLifeState(RE::Actor* a_actor)
 		{
 			return a_actor->AsActorState()->GetLifeState();
+		}
+
+		// Reads an actor's knock state. Same accessor rule and the same reason
+		// as ReadLifeState above: knockState is a bitfield on ActorState, and
+		// ActorState is one of the base subobjects that does not sit where the
+		// multi-runtime compile-time layout claims.
+		//
+		//   ActorState.h:116   KNOCK_STATE_ENUM knockState: 3
+		//   ActorState.h:52    kNormal 0, kExplode 1, kExplodeLeadIn 2, kOut 3,
+		//                      kOutLeadIn 4, kQueued 5, kGetUp 6, kDown 7,
+		//                      kWaitForTaskQueue 8
+		RE::KNOCK_STATE_ENUM ReadKnockState(RE::Actor* a_actor)
+		{
+			return a_actor->AsActorState()->GetKnockState();
+		}
+
+		// Is this knock state one where the actor is on the ground, or on the
+		// way there? kNormal means upright and kGetUp means already standing
+		// back up, so neither needs reverting.
+		//
+		// The library documents none of these values, so this grouping is read
+		// off the names and nothing else. It is used only to decide whether
+		// KnockoutRecover writes to the field at all - being wrong about a
+		// value here makes the recovery a no-op on that state, not a corruption.
+		bool IsDownKnockState(RE::KNOCK_STATE_ENUM a_state)
+		{
+			switch (a_state) {
+			case RE::KNOCK_STATE_ENUM::kExplode:
+			case RE::KNOCK_STATE_ENUM::kExplodeLeadIn:
+			case RE::KNOCK_STATE_ENUM::kOut:
+			case RE::KNOCK_STATE_ENUM::kOutLeadIn:
+			case RE::KNOCK_STATE_ENUM::kQueued:
+			case RE::KNOCK_STATE_ENUM::kDown:
+				return true;
+			default:
+				return false;
+			}
 		}
 
 		// -------------------------------------------------------------------
@@ -224,6 +292,211 @@ namespace Lodestone::Core::Incapacitation
 			return static_cast<std::int32_t>(ReadLifeState(a_actor));
 		}
 
+		// Lodestone.KnockoutFall(Actor) -> Bool
+		//
+		// Puts a managed-unconscious actor physically on the ground. Refuses a
+		// null actor, one this module is not currently managing, a dead one,
+		// and one whose 3D is not loaded (there is no body to drop). Returns
+		// true if the actor is on the ground when this returns, including the
+		// case where it already was.
+		//
+		// IDEMPOTENT, and that is a requirement rather than a nicety. knockState
+		// is animation state and does not survive a save, so a consumer holding
+		// a knockout across a reload has to reapply the fall without being able
+		// to tell whether it took - it will call this again on an actor that may
+		// or may not still be down. A second impulse on an actor already on the
+		// ground is exactly the "stacked impulse" this guard exists to prevent.
+		//
+		// WHY KnockExplosion AND NOT A HAND-WRITTEN knockState. Writing
+		// knockState directly is what the V1 contract refused to do, because
+		// that field drives the animation graph and a value without the matching
+		// transition is how an actor ends up in a T-pose. KnockExplosion is the
+		// engine's own route into the same state - it is what runs on every
+		// explosion and every Unrelenting Force in the base game - so the engine
+		// performs the whole transition, ragdoll included, and sets knockState
+		// itself to whatever it considers consistent. This does not work around
+		// the V1 restriction; it removes the reason for it.
+		//
+		// ALTERNATIVE NOT TAKEN, and the first thing to try if this one needs
+		// tuning it cannot get: AIProcess::KnockParalyze(Actor*) (AIProcess.h:184)
+		// takes no position and no magnitude, which would retire both constants
+		// above and the direction question with them. It was not chosen because
+		// this module's own history argues against reaching for paralysis: the
+		// documented Papyrus-era predecessor in this space combined an
+		// unconscious state with a paralysis effect and produced NPCs that never
+		// got up. That risk is about state management rather than about this
+		// specific call, and this module owns its recovery path - so the
+		// objection is weaker than it looks and this stays a live option.
+		bool KnockoutFall(RE::StaticFunctionTag*, RE::Actor* a_actor)
+		{
+			if (!a_actor) {
+				spdlog::warn("Incapacitation: KnockoutFall got a None actor - ignored.");
+				return false;
+			}
+
+			const auto formID = a_actor->GetFormID();
+
+			{
+				std::lock_guard lock(g_registryLock);
+				if (!g_registry.contains(formID)) {
+					spdlog::warn("Incapacitation: KnockoutFall called on actor (0x{:08X}) this module is not "
+								 "managing - refused. Call KnockoutActor first and check that it returned True.",
+						formID);
+					return false;
+				}
+			}
+
+			if (a_actor->IsDead()) {
+				spdlog::warn("Incapacitation: KnockoutFall called on a dead actor (0x{:08X}) - ignored.", formID);
+				return false;
+			}
+
+			if (!a_actor->Is3DLoaded()) {
+				spdlog::warn("Incapacitation: KnockoutFall called on actor (0x{:08X}) with no 3D loaded - "
+							 "ignored, there is no body to knock down.",
+					formID);
+				return false;
+			}
+
+			// Two independent guards against a second impulse, and the first one
+			// is the one that has to hold. Asking the engine whether the actor is
+			// ragdolled only works if KnockExplosion actually engages the ragdoll,
+			// which has not been observed yet - if it does not, that check answers
+			// false on an actor this module just knocked down, and the next call
+			// stacks another impulse on it. This module's own record of who it
+			// dropped does not depend on the engine agreeing.
+			//
+			// After a load the record is empty by design, so the consumer's
+			// reapply still goes through. That is the case it exists for.
+			bool alreadyFallen = false;
+			{
+				std::lock_guard lock(g_registryLock);
+				alreadyFallen = g_fallen.contains(formID);
+			}
+
+			if (alreadyFallen || a_actor->IsInRagdollState()) {
+				spdlog::info("Incapacitation: KnockoutFall on actor (0x{:08X}) - already down (recorded {}, "
+							 "ragdoll {}, knock state {}), no second impulse applied.",
+					formID, alreadyFallen, a_actor->IsInRagdollState(),
+					static_cast<std::uint32_t>(ReadKnockState(a_actor)));
+				std::lock_guard lock(g_registryLock);
+				g_fallen.insert(formID);
+				return true;
+			}
+
+			auto* process = a_actor->GetActorRuntimeData().currentProcess;
+			if (!process) {
+				spdlog::warn("Incapacitation: KnockoutFall found no AI process on actor (0x{:08X}) - refused.",
+					formID);
+				return false;
+			}
+
+			try {
+				// Instrumented on purpose, at info so it survives a Release
+				// build. Nothing here has been seen in game yet: this is the
+				// only way the next session can tell whether KnockExplosion
+				// moved knockState at all, which value it chose, and whether
+				// the ragdoll actually engaged. Called once per takedown, so
+				// the cost does not matter.
+				const auto beforeKnock = ReadKnockState(a_actor);
+				const auto position = a_actor->GetPosition();
+				const RE::NiPoint3 origin{ position.x, position.y, position.z + kFallOriginHeight };
+
+				process->KnockExplosion(a_actor, origin, kFallImpulse);
+
+				const auto afterKnock = ReadKnockState(a_actor);
+				spdlog::info("Incapacitation: KnockoutFall on actor (0x{:08X}) - knock state {} -> {}, "
+							 "ragdoll {}, impulse {} from {} units above.",
+					formID, static_cast<std::uint32_t>(beforeKnock), static_cast<std::uint32_t>(afterKnock),
+					a_actor->IsInRagdollState(), kFallImpulse, kFallOriginHeight);
+
+				std::lock_guard lock(g_registryLock);
+				g_fallen.insert(formID);
+			} catch (...) {
+				spdlog::error("Incapacitation: KnockoutFall threw on actor (0x{:08X}) - not recorded as fallen.",
+					formID);
+				return false;
+			}
+
+			return true;
+		}
+
+		// Lodestone.KnockoutRecover(Actor) -> Bool
+		//
+		// Gets an actor this module knocked down back on its feet. A harmless
+		// false on an actor KnockoutFall never dropped - nothing is touched.
+		//
+		// ORDER AGAINST WakeActor DOES NOT MATTER, by construction. This call
+		// never reads or writes the life state and WakeActor never reads or
+		// writes the knock state, so the two revert independent halves and
+		// either one may run first. That is deliberate: the failure this module
+		// most has to avoid is an actor left permanently down, and a recovery
+		// that only works in one call order is a recovery with a way to be
+		// skipped.
+		//
+		// Leaves a corpse alone. Once an actor is dead the engine owns its
+		// pose, and forcing a get-up transition on a body that is already in a
+		// death ragdoll is how a corpse ends up standing or sliding.
+		bool KnockoutRecover(RE::StaticFunctionTag*, RE::Actor* a_actor)
+		{
+			if (!a_actor) {
+				return false;
+			}
+
+			const auto formID = a_actor->GetFormID();
+
+			bool wasFallen = false;
+			{
+				std::lock_guard lock(g_registryLock);
+				wasFallen = g_fallen.erase(formID) > 0;
+			}
+
+			if (!wasFallen) {
+				return false;
+			}
+
+			if (a_actor->IsDead()) {
+				spdlog::info("Incapacitation: KnockoutRecover on actor (0x{:08X}) - dead, pose left to the "
+							 "engine. Dropped from the fallen set.",
+					formID);
+				return true;
+			}
+
+			try {
+				const auto beforeKnock = ReadKnockState(a_actor);
+
+				// Only written when the actor is still down. If KnockExplosion
+				// left the field somewhere the engine is already unwinding, the
+				// engine is better informed than this call is - see the log
+				// line, which is what will tell the next session whether this
+				// write was needed at all.
+				if (IsDownKnockState(beforeKnock)) {
+					a_actor->AsActorState()->actorState1.knockState = RE::KNOCK_STATE_ENUM::kGetUp;
+				}
+
+				// The 3D resync is the half with no Papyrus equivalent, and the
+				// reference implementation in this space treats it - rather than
+				// the package re-evaluation - as what keeps the model from
+				// coming back wrong. EvaluatePackage last, so the AI resumes
+				// against a model that has already been put back together.
+				a_actor->Update3DModel();
+				a_actor->UpdateActor3DPosition();
+				a_actor->EvaluatePackage(true, true);
+
+				spdlog::info("Incapacitation: KnockoutRecover on actor (0x{:08X}) - knock state {} -> {}, "
+							 "ragdoll {}, 3D resynced and package re-evaluated.",
+					formID, static_cast<std::uint32_t>(beforeKnock),
+					static_cast<std::uint32_t>(ReadKnockState(a_actor)), a_actor->IsInRagdollState());
+			} catch (...) {
+				spdlog::error("Incapacitation: KnockoutRecover threw on actor (0x{:08X}) - fallen-set entry "
+							  "already removed, so this cannot leave the actor stuck as far as this module "
+							  "is concerned.",
+					formID);
+			}
+
+			return true;
+		}
+
 		// Lodestone.RegisterForActorWoke(Form) -> Bool
 		bool RegisterForActorWoke(RE::StaticFunctionTag*, RE::TESForm* a_receiver)
 		{
@@ -267,11 +540,101 @@ namespace Lodestone::Core::Incapacitation
 		}
 
 		// -------------------------------------------------------------------
+		// Death sink
+		//
+		// The one thing this module cannot learn by being called: an actor it
+		// is managing can die, and nothing in the Papyrus surface has to tell
+		// us. Until this existed, WakeActor was the only path that removed a
+		// FormID from the registry, so killing a managed actor left it managed
+		// forever - IsManagedUnconscious answered true for a corpse and the
+		// cosave carried a dead actor between saves with no way to ever drop
+		// it. The physical fall turns that from an invisible leak into a body
+		// on the ground that this module still believes it is responsible for.
+		//
+		// This is the first event sink in the plugin. It is not an engine hook:
+		// nothing is detoured and no address is involved, so none of the
+		// hooking rules in CONVENTIONS.md apply to it. It does need the event
+		// source to exist, which is why it is wired on kDataLoaded like the
+		// hooks are, rather than at plugin load like the cosave.
+		// -------------------------------------------------------------------
+
+		class DeathSink : public RE::BSTEventSink<RE::TESDeathEvent>
+		{
+		public:
+			static DeathSink* GetSingleton()
+			{
+				static DeathSink singleton;
+				return std::addressof(singleton);
+			}
+
+			RE::BSEventNotifyControl ProcessEvent(const RE::TESDeathEvent*           a_event,
+				RE::BSTEventSource<RE::TESDeathEvent>*) override
+			{
+				// Never let anything escape into the engine, on any path.
+				try {
+					if (!a_event || !a_event->actorDying) {
+						return RE::BSEventNotifyControl::kContinue;
+					}
+
+					// The FormID is all this needs - no cast to Actor, nothing
+					// dereferenced beyond the form itself.
+					const auto formID = a_event->actorDying->GetFormID();
+
+					bool wasManaged = false;
+					bool wasFallen = false;
+					{
+						std::lock_guard lock(g_registryLock);
+						wasManaged = g_registry.erase(formID) > 0;
+						wasFallen = g_fallen.erase(formID) > 0;
+					}
+
+					// This event fires more than once for a single death (the
+					// `dead` flag on it separates entering the death state from
+					// the confirmed death). That is engine behavior the headers
+					// do not document, so nothing here depends on it: erasing
+					// is idempotent and only the pass that actually removed
+					// something says so.
+					if (wasManaged || wasFallen) {
+						spdlog::info("Incapacitation: managed actor (0x{:08X}) died - dropped from the "
+									 "registry (managed {}, fallen {}). No wake event is dispatched: it did "
+									 "not wake.",
+							formID, wasManaged, wasFallen);
+					}
+				} catch (...) {
+					spdlog::error("Incapacitation: the death sink threw - swallowed, the engine must not see it.");
+				}
+
+				return RE::BSEventNotifyControl::kContinue;
+			}
+
+		private:
+			DeathSink() = default;
+			DeathSink(const DeathSink&) = delete;
+			DeathSink(DeathSink&&) = delete;
+			~DeathSink() override = default;
+			DeathSink& operator=(const DeathSink&) = delete;
+			DeathSink& operator=(DeathSink&&) = delete;
+		};
+
+		// -------------------------------------------------------------------
 		// Cosave callbacks
 		//
 		// Persist ONLY the set of managed FormIDs - no duration, the
 		// consumer's own Papyrus timer owns that and Papyrus state already
 		// survives a save on its own. See Incapacitation.h, PERSISTENCE.
+		//
+		// THE FALLEN SET IS NOT PERSISTED, AND THE RECORD DOES NOT CHANGE.
+		// Adding it would mean a 'INC1' version 2 and a load path for both
+		// shapes, to persist an answer that is wrong by the time it is read:
+		// knockState is animation state that does not survive a save, so a
+		// managed actor comes back from a reload standing up no matter what
+		// this set claimed. Saving it would restore a record of a fall that
+		// did not survive.
+		//
+		// What that leaves for the consumer: after a load, reapply
+		// KnockoutFall to the actors it still considers knocked out. That call
+		// is idempotent precisely so this is safe to do without knowing
+		// whether the physical state survived.
 		// -------------------------------------------------------------------
 
 		void SaveCallback(SKSE::SerializationInterface* a_intfc)
@@ -305,6 +668,11 @@ namespace Lodestone::Core::Incapacitation
 		{
 			std::lock_guard lock(g_registryLock);
 			g_registry.clear();
+
+			// Whatever was on the ground before this load is not on the ground
+			// now - the fall did not travel in the save. The consumer reapplies
+			// it, so starting empty is the honest state rather than a lost one.
+			g_fallen.clear();
 
 			std::uint32_t type = 0;
 			std::uint32_t version = 0;
@@ -351,7 +719,8 @@ namespace Lodestone::Core::Incapacitation
 		{
 			std::lock_guard lock(g_registryLock);
 			g_registry.clear();
-			spdlog::info("Incapacitation: registry cleared (new game or return to main menu).");
+			g_fallen.clear();
+			spdlog::info("Incapacitation: registry and fallen set cleared (new game or return to main menu).");
 		}
 	}
 
@@ -364,6 +733,8 @@ namespace Lodestone::Core::Incapacitation
 
 		a_vm->RegisterFunction("KnockoutActor", "Lodestone", KnockoutActor);
 		a_vm->RegisterFunction("WakeActor", "Lodestone", WakeActor);
+		a_vm->RegisterFunction("KnockoutFall", "Lodestone", KnockoutFall);
+		a_vm->RegisterFunction("KnockoutRecover", "Lodestone", KnockoutRecover);
 		a_vm->RegisterFunction("IsManagedUnconscious", "Lodestone", IsManagedUnconscious);
 		a_vm->RegisterFunction("GetActorLifeState", "Lodestone", GetActorLifeState);
 		a_vm->RegisterFunction("RegisterForActorWoke", "Lodestone", RegisterForActorWoke);
@@ -371,10 +742,23 @@ namespace Lodestone::Core::Incapacitation
 		a_vm->RegisterFunction("RegisterForActorWokeAlias", "Lodestone", RegisterForActorWokeAlias);
 		a_vm->RegisterFunction("UnregisterForActorWokeAlias", "Lodestone", UnregisterForActorWokeAlias);
 
-		spdlog::info("Incapacitation: natives registered (KnockoutActor, WakeActor, IsManagedUnconscious, "
-					 "GetActorLifeState, RegisterForActorWoke, UnregisterForActorWoke, "
-					 "RegisterForActorWokeAlias, UnregisterForActorWokeAlias).");
+		spdlog::info("Incapacitation: natives registered (KnockoutActor, WakeActor, KnockoutFall, "
+					 "KnockoutRecover, IsManagedUnconscious, GetActorLifeState, RegisterForActorWoke, "
+					 "UnregisterForActorWoke, RegisterForActorWokeAlias, UnregisterForActorWokeAlias).");
 		return true;
+	}
+
+	void Install()
+	{
+		auto* holder = RE::ScriptEventSourceHolder::GetSingleton();
+		if (!holder) {
+			spdlog::error("Incapacitation: no script event source holder - a managed actor that dies will "
+						  "stay in the registry, and IsManagedUnconscious will answer true for its corpse.");
+			return;
+		}
+
+		holder->AddEventSink<RE::TESDeathEvent>(DeathSink::GetSingleton());
+		spdlog::info("Incapacitation: death sink registered - a managed actor that dies leaves the registry.");
 	}
 
 	void RegisterSerialization()

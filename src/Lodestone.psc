@@ -288,13 +288,31 @@ String Function GetChannelContributorPlugin(String asChannel, Int aiIndex) globa
 ; WakeActor also serves a forced wake - the only difference is who calls it
 ; and when.
 ;
-; V1 HAS NO PAIRED ANIMATION. The actor stops acting hostile and its AI
-; package is re-evaluated on waking, but it does not physically fall over.
-; An animated knockout is a separate, future capability.
+; THE PHYSICAL FALL IS OPTIONAL AND SEPARATE. KnockoutActor on its own
+; pacifies the actor without dropping it - that is what it has always done
+; and it has not changed. To also put the actor on the ground, call
+; KnockoutFall after it, and KnockoutRecover to get the actor back up. A
+; consumer that never calls either keeps exactly the behavior it had before
+; those two existed.
+;
+; The two halves are independent on purpose: KnockoutFall/KnockoutRecover
+; never touch the life state, and KnockoutActor/WakeActor never touch the
+; physical state. You may call WakeActor and KnockoutRecover in either
+; order.
 ;
 ; PERSISTENCE: the set of managed actors survives a save/reload (this module
 ; keeps its own cosave record). The consumer's own timer state is Papyrus's
 ; responsibility, as always - re-arm it on load like any other timer.
+;
+; THE PHYSICAL FALL DOES NOT SURVIVE A SAVE. It is animation state, and the
+; game does not save it. An actor you knocked down comes back from a reload
+; standing up, still managed. Reapply KnockoutFall on load to every actor
+; you still consider knocked out - KnockoutFall is idempotent, so you do not
+; have to work out first whether it is still needed.
+;
+; A MANAGED ACTOR THAT DIES is dropped automatically: IsManagedUnconscious
+; returns False for a corpse and nothing is carried between saves. No
+; OnActorWoke is dispatched for it, because it did not wake.
 ;
 ; Registration for OnActorWoke is session-scoped (not saved) - re-register
 ; after each load, the same runtime model the other modules use.
@@ -318,8 +336,36 @@ Bool Function KnockoutActor(Actor akActor) global native
 ; managed actor. Never throws.
 Bool Function WakeActor(Actor akActor) global native
 
+; Puts akActor physically on the ground. Call it after KnockoutActor has
+; returned True - it refuses (returns False) an actor this module is not
+; already managing, and also a None actor, a dead one, or one whose 3D is
+; not loaded. Never throws.
+;
+; IDEMPOTENT: calling it on an actor that is already down does nothing and
+; returns True. That is what makes it safe to reapply after a game load
+; without checking anything first - see PERSISTENCE above.
+;
+; There is no strength or duration parameter, and there will not be one.
+; How long the knockout lasts is your timer's decision, as always; how hard
+; the actor falls is not a decision anybody needs to make.
+;
+; Requires Lodestone.GetVersion() >= 1012000 (1.12.0).
+Bool Function KnockoutFall(Actor akActor) global native
+
+; Gets akActor back on its feet, resyncing the 3D model and re-evaluating
+; the AI package. A harmless False on an actor KnockoutFall never knocked
+; down - nothing is touched. Leaves a corpse alone. Never throws.
+;
+; Order against WakeActor does not matter: this call never touches the life
+; state and WakeActor never touches the physical state.
+;
+; Requires Lodestone.GetVersion() >= 1012000 (1.12.0).
+Bool Function KnockoutRecover(Actor akActor) global native
+
 ; Is akActor currently managed-unconscious by THIS module? Distinct from the
 ; engine's own IsUnconscious() - see the note above. None actor -> False.
+; Returns False for a corpse: a managed actor that dies is dropped
+; automatically as of 1.12.0.
 Bool Function IsManagedUnconscious(Actor akActor) global native
 
 ; The raw engine life state of akActor, as a number. This is a diagnostic

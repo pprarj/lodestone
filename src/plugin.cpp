@@ -68,6 +68,14 @@ namespace
 			Lodestone::Core::BookFramework::Install();
 			Lodestone::Core::SpellTomes::Install();
 			Lodestone::Core::MagicScaling::Install();
+
+			// Not a hook. Incapacitation's Install registers a TESDeathEvent
+			// sink, and it is here for a different reason than the four above:
+			// they need a vtable to exist, this one needs the script event
+			// source to exist. Same seam, same timing, different requirement -
+			// worth saying out loud, because "Install" in this file has meant
+			// "detour something" up to now.
+			Lodestone::Core::Incapacitation::Install();
 		}
 	}
 }
