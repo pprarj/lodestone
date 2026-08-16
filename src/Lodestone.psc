@@ -359,8 +359,20 @@ Bool Function KnockoutFall(Actor akActor) global native
 ; the AI package. A harmless False on an actor KnockoutFall never knocked
 ; down - nothing is touched. Leaves a corpse alone. Never throws.
 ;
-; Order against WakeActor does not matter: this call never touches the life
-; state and WakeActor never touches the physical state.
+; Order against WakeActor does not matter when the actor is managed: in that
+; case KnockoutActor moved the life state and WakeActor moves it back, and
+; this call does not touch it.
+;
+; When KnockoutFall ran on an actor that was NOT managed, this call also
+; restores the life state, because nothing else would - WakeActor refuses an
+; unmanaged actor. That is the only case where this call touches it, and it
+; is what keeps the unmanaged path from leaving an actor pacified forever.
+;
+; ONE HOLE, AND IT IS HONEST: that ownership is remembered in memory only.
+; If you knock an actor down WITHOUT KnockoutActor and then save and reload
+; before waking it, the record is gone and this call will not restore the
+; life state. Use the managed path (KnockoutActor first) for anything that
+; has to survive a reload, or restore it yourself in your load handler.
 ;
 ; Requires Lodestone.GetVersion() >= 1012000 (1.12.0).
 Bool Function KnockoutRecover(Actor akActor) global native

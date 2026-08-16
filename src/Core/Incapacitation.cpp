@@ -49,6 +49,23 @@ namespace Lodestone::Core::Incapacitation
 		{
 			std::uint32_t blockedGetUps = 0;
 			std::uint32_t loggedAnimEvents = 0;
+
+			// Whether KnockoutFall is the one that put this actor into
+			// kUnconcious, and therefore the one that owes it a way back.
+			//
+			// True only when the fall ran on an actor this module was NOT
+			// managing. When it IS managed, KnockoutActor set the life state
+			// and WakeActor reverts it, and the two halves stay independent -
+			// which is the guarantee that lets the consumer call WakeActor and
+			// KnockoutRecover in either order.
+			//
+			// 1.12.6 relaxed the fall's precondition without following this
+			// through, and left a path where nobody restored the life state at
+			// all: the fall set kUnconcious, recovery did not touch it by
+			// contract, and WakeActor refuses an unmanaged actor. An actor
+			// pacified forever is precisely the failure this module refused
+			// KnockParalyze over, and it arrived by the back door.
+			bool ownsLifeState = false;
 		};
 
 		std::unordered_map<RE::FormID, FallenState> g_fallen;
@@ -674,8 +691,14 @@ namespace Lodestone::Core::Incapacitation
 					sitSleepAccepted, position.z, kFallNudge);
 
 				{
+					// The sequence above moved the life state. If nothing else
+					// is managing this actor, this call owns putting it back -
+					// see FallenState::ownsLifeState.
+					FallenState state;
+					state.ownsLifeState = !managed;
+
 					std::lock_guard lock(g_registryLock);
-					g_fallen.emplace(formID, FallenState{});
+					g_fallen.emplace(formID, state);
 				}
 
 				// Registered after the entry exists, because the sink filters on
@@ -719,12 +742,14 @@ namespace Lodestone::Core::Incapacitation
 			// entry - reading it afterwards would always find nothing, because
 			// the entry is gone by then.
 			bool          wasFallen = false;
+			bool          ownsLifeState = false;
 			std::uint32_t blocked = 0;
 			{
 				std::lock_guard lock(g_registryLock);
 				if (const auto it = g_fallen.find(formID); it != g_fallen.end()) {
 					wasFallen = true;
 					blocked = it->second.blockedGetUps;
+					ownsLifeState = it->second.ownsLifeState;
 					g_fallen.erase(it);
 				}
 			}
@@ -781,6 +806,25 @@ namespace Lodestone::Core::Incapacitation
 				// sit/sleep state into normal play, which is a worse residue than
 				// anything this module has left behind so far.
 				a_actor->AsActorState()->DoSetSitSleepState(RE::SIT_SLEEP_STATE::kNormal);
+
+				// AND THE LIFE STATE, BUT ONLY WHEN THIS MODULE'S FALL IS WHAT
+				// MOVED IT.
+				//
+				// When the actor is managed, KnockoutActor moved it and
+				// WakeActor moves it back, and touching it here would break the
+				// guarantee that the two calls can be issued in either order.
+				// When the actor is not managed, the fall moved it and nothing
+				// else will ever move it back - WakeActor refuses an unmanaged
+				// actor - so this is the only place the cycle can close.
+				//
+				// Guarded on the state still being kUnconcious so this cannot
+				// wake something that changed underneath us in the meantime.
+				if (ownsLifeState && ReadLifeState(a_actor) == RE::ACTOR_LIFE_STATE::kUnconcious) {
+					a_actor->SetLifeState(RE::ACTOR_LIFE_STATE::kAlive);
+					spdlog::info("Incapacitation: KnockoutRecover on actor (0x{:08X}) - restored life state to "
+								 "kAlive. The fall set it on an unmanaged actor, so nothing else would have.",
+						formID);
+				}
 
 				// knockState is not written here. 1.12.2 settled that the field
 				// is the engine's to set, and writing kGetUp into an actor still
