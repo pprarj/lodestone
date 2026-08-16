@@ -15,7 +15,7 @@ cmake_minimum_required(VERSION 3.21)
 # DLL version - INDEPENDENT of the mod version on Nexus.
 project(
     Lodestone
-    VERSION 1.12.7
+    VERSION 1.12.8
     LANGUAGES CXX
 )
 

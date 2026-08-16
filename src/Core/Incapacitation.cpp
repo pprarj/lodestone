@@ -988,6 +988,98 @@ namespace Lodestone::Core::Incapacitation
 		};
 
 		// -------------------------------------------------------------------
+		// The SetUnconscious call-site hooks - PROVING PASS, NO BEHAVIOUR
+		//
+		// Eight rounds went into composing public calls from outside the engine,
+		// and the trace eventually explained why none of it held: a Papyrus call
+		// lands BETWEEN engine frames, and by the time the next one runs the
+		// state machine has settled. The reference implementation does not
+		// compose calls at all - it replaces two `call` instructions inside the
+		// body of the handler behind Actor.SetUnconscious, so its code runs
+		// INSIDE that handler, before it returns. That is a place no amount of
+		// calling public functions can reach.
+		//
+		// THIS VERSION CHANGES NOTHING. Both thunks call the original and return
+		// its answer, and all they add is a log line. CONVENTIONS.md asks for
+		// exactly this before behaviour goes on a borrowed address, and this
+		// trail has already paid twice for skipping the proving step - once on a
+		// stale second-hand reading, once on a vtable index that happened to be
+		// right. What the log has to show: the thunk firing when, and only when,
+		// something calls SetUnconscious, with an actor whose FormID makes sense
+		// and a bool that matches what was asked. Anything else and the address
+		// is wrong.
+		//
+		// TWO CALL SITES, ONE FUNCTION. The handler calls the same implementation
+		// from two branches - one enabling, one disabling - so hooking both is
+		// what tells the two apart. Offsets and the ID come from the reference
+		// implementation's source, which makes them a hypothesis until this pass
+		// says otherwise.
+		//
+		// NOT INSTALLED ON VR, AND THE REASON IS A TRAP WORTH WRITING DOWN.
+		// REL::RelocationID's two-argument constructor assigns the SE id to the
+		// VR slot (ID.h:480) rather than refusing. VR has its own Address
+		// Library numbering, so on VR that silently resolves to whatever else
+		// id 21874 happens to be - a wrong address that installs quietly. The
+		// reference implementation uses the same constructor and does not target
+		// VR; this plugin does, so the guard is ours to add.
+		// -------------------------------------------------------------------
+
+		using SetUnconsciousFn = bool (*)(RE::Actor*, bool);
+
+		struct SetUnconsciousCallHook
+		{
+			static bool EnableThunk(RE::Actor* a_actor, bool a_enable)
+			{
+				Report("enable", a_actor, a_enable);
+				return reinterpret_cast<SetUnconsciousFn>(enableOriginal)(a_actor, a_enable);
+			}
+
+			static bool DisableThunk(RE::Actor* a_actor, bool a_enable)
+			{
+				Report("disable", a_actor, a_enable);
+				return reinterpret_cast<SetUnconsciousFn>(disableOriginal)(a_actor, a_enable);
+			}
+
+			static inline std::uintptr_t enableOriginal = 0;
+			static inline std::uintptr_t disableOriginal = 0;
+
+		private:
+			// Never lets anything escape into the engine, on any path - this
+			// runs inside an engine function, which is the least forgiving
+			// place in the plugin to throw from.
+			static void Report(const char* a_site, RE::Actor* a_actor, bool a_enable)
+			{
+				try {
+					if (!a_actor) {
+						spdlog::info("Incapacitation: [proof] SetUnconscious {} call site fired with a null "
+									 "actor, enable={}.",
+							a_site, a_enable);
+						return;
+					}
+
+					const auto formID = a_actor->GetFormID();
+
+					bool managed = false;
+					bool fallen = false;
+					{
+						std::lock_guard lock(g_registryLock);
+						managed = g_registry.contains(formID);
+						fallen = g_fallen.contains(formID);
+					}
+
+					spdlog::info("Incapacitation: [proof] SetUnconscious {} call site fired - actor "
+								 "(0x{:08X}), enable={}, life {}, knock {}, sit/sleep {}, managed {}, "
+								 "fallen {}. Nothing was changed by this hook.",
+						a_site, formID, a_enable, static_cast<std::uint32_t>(ReadLifeState(a_actor)),
+						static_cast<std::uint32_t>(ReadKnockState(a_actor)),
+						static_cast<std::uint32_t>(ReadSitSleepState(a_actor)), managed, fallen);
+				} catch (...) {
+					spdlog::error("Incapacitation: the SetUnconscious proof hook threw - swallowed.");
+				}
+			}
+		};
+
+		// -------------------------------------------------------------------
 		// Death sink
 		//
 		// The one thing this module cannot learn by being called: an actor it
@@ -1235,6 +1327,52 @@ namespace Lodestone::Core::Incapacitation
 			spdlog::error("Incapacitation: failed to install the get-up hook (unknown exception) - "
 						  "KnockoutFall will still drop an actor, but the engine will stand it back up "
 						  "after a moment.");
+		}
+
+		// The SetUnconscious call-site proof. See the hook above for what this
+		// is for and why VR is excluded.
+		if (REL::Module::IsVR()) {
+			spdlog::info("Incapacitation: SetUnconscious call-site proof NOT installed - this is a VR "
+						 "runtime and the address is only known for SE and AE. Installing it here would "
+						 "resolve the SE id against the VR database and hook something else entirely.");
+			return;
+		}
+
+		try {
+			// First and only trampoline user in this plugin - every other hook
+			// here is a vtable swap or SafetyHook, which manage their own. Two
+			// unique destinations at 14 bytes each; 64 is room to spare. If a
+			// second module ever needs the trampoline, this call has to move
+			// somewhere both can share, because it replaces the allocation
+			// rather than adding to it.
+			SKSE::AllocTrampoline(64);
+			auto& trampoline = SKSE::GetTrampoline();
+
+			// write_call<5> and not write_branch<5>: the target is an existing
+			// `call rel32` (0xE8), not a jmp. Both primitives redirect an
+			// existing call or jump site and neither detours a function body -
+			// which is the distinction CONVENTIONS.md records, and this is the
+			// use it was always the right tool for.
+			const REL::Relocation<std::uintptr_t> enableTarget{ REL::RelocationID(21874, 22356),
+				REL::Relocate(0xC8, 0xC8) };
+			const REL::Relocation<std::uintptr_t> disableTarget{ REL::RelocationID(21874, 22356),
+				REL::Relocate(0x120, 0x120) };
+
+			SetUnconsciousCallHook::enableOriginal =
+				trampoline.write_call<5>(enableTarget.address(), SetUnconsciousCallHook::EnableThunk);
+			SetUnconsciousCallHook::disableOriginal =
+				trampoline.write_call<5>(disableTarget.address(), SetUnconsciousCallHook::DisableThunk);
+
+			spdlog::info("Incapacitation: SetUnconscious call-site proof installed - enable @0x{:X}, "
+						 "disable @0x{:X}, originals 0x{:X} and 0x{:X}. LOG ONLY, no behaviour attached. "
+						 "Both thunks call the original and return its answer.",
+				enableTarget.address(), disableTarget.address(), SetUnconsciousCallHook::enableOriginal,
+				SetUnconsciousCallHook::disableOriginal);
+		} catch (const std::exception& e) {
+			spdlog::error("Incapacitation: failed to install the SetUnconscious call-site proof: {}", e.what());
+		} catch (...) {
+			spdlog::error("Incapacitation: failed to install the SetUnconscious call-site proof "
+						  "(unknown exception).");
 		}
 	}
 
