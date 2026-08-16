@@ -1030,8 +1030,14 @@ namespace Lodestone::Core::Incapacitation
 		{
 			static bool EnableThunk(RE::Actor* a_actor, bool a_enable)
 			{
+				// Original first, always - the same rule every other thunk in
+				// this plugin follows, and here it is also what the reference
+				// implementation does: the engine's own work has to be finished
+				// before anything is stacked on it.
+				const auto ret = reinterpret_cast<SetUnconsciousFn>(enableOriginal)(a_actor, a_enable);
 				Report("enable", a_actor, a_enable);
-				return reinterpret_cast<SetUnconsciousFn>(enableOriginal)(a_actor, a_enable);
+				ApplyInsideHandler(a_actor, a_enable);
+				return ret;
 			}
 
 			static bool DisableThunk(RE::Actor* a_actor, bool a_enable)
@@ -1044,6 +1050,83 @@ namespace Lodestone::Core::Incapacitation
 			static inline std::uintptr_t disableOriginal = 0;
 
 		private:
+			// THIS IS THE POINT OF THE WHOLE EXERCISE. It runs INSIDE the
+			// handler, after the engine's own SetUnconscious has finished and
+			// before the handler returns to Papyrus - the one place eight
+			// rounds of composing public calls could not reach, because a
+			// Papyrus call always lands between frames and this does not.
+			//
+			// AND IT ONLY TOUCHES ACTORS THE CONSUMER ASKED FOR. The reference
+			// implementation applies this to every actor anyone makes
+			// unconscious, which is right for a knockout mod and wrong for
+			// this: a framework that changes what a vanilla call does the
+			// moment it is installed is the exact defect 1.0.1 had to fix for
+			// SpellTomes, where merely having Lodestone in the load order broke
+			// spell tomes for everybody. So the actor has to be in the fallen
+			// set, which means KnockoutFall armed it - no registration, no
+			// change from vanilla, same rule as every other module here.
+			static void ApplyInsideHandler(RE::Actor* a_actor, bool a_enable)
+			{
+				if (!a_actor || !a_enable) {
+					return;
+				}
+
+				try {
+					const auto formID = a_actor->GetFormID();
+
+					{
+						std::lock_guard lock(g_registryLock);
+						if (!g_fallen.contains(formID)) {
+							return;
+						}
+					}
+
+					auto* process = a_actor->GetActorRuntimeData().currentProcess;
+					if (!process || !a_actor->Is3DLoaded()) {
+						spdlog::warn("Incapacitation: [inside] actor (0x{:08X}) is armed but has no AI process "
+									 "or no 3D - nothing applied.",
+							formID);
+						return;
+					}
+
+					if (!process->InHighProcess()) {
+						auto* owner = process->GetUserData();
+						if (!owner || !owner->MoveToHigh()) {
+							spdlog::warn("Incapacitation: [inside] could not bring actor (0x{:08X}) to high "
+										 "process - nothing applied.",
+								formID);
+							return;
+						}
+					}
+
+					// The reference implementation's sequence, run where it runs
+					// it. Same steps as KnockoutFall has been running from the
+					// outside; the difference this version tests is the place,
+					// not the recipe.
+					a_actor->SetLifeState(RE::ACTOR_LIFE_STATE::kUnconcious);
+
+					const auto position = a_actor->GetPosition();
+					a_actor->SetLifeState(RE::ACTOR_LIFE_STATE::kAlive);
+					process->KnockExplosion(a_actor, position, kFallNudge);
+					a_actor->SetLifeState(RE::ACTOR_LIFE_STATE::kUnconcious);
+
+					a_actor->AsActorState()->actorState1.knockState = RE::KNOCK_STATE_ENUM::kDown;
+					const bool sitSleepAccepted =
+						a_actor->AsActorState()->DoSetSitSleepState(RE::SIT_SLEEP_STATE::kIsSleeping);
+
+					spdlog::info("Incapacitation: [inside] applied the sequence to actor (0x{:08X}) from "
+								 "inside the handler - knock {}, life {}, sit/sleep {} (DoSetSitSleepState "
+								 "returned {}), z {:.1f}. Every value here is pre-physics, as always - "
+								 "KnockoutRecover carries the verdict.",
+						formID, static_cast<std::uint32_t>(ReadKnockState(a_actor)),
+						static_cast<std::uint32_t>(ReadLifeState(a_actor)),
+						static_cast<std::uint32_t>(ReadSitSleepState(a_actor)), sitSleepAccepted, position.z);
+				} catch (...) {
+					spdlog::error("Incapacitation: the inside-handler sequence threw - swallowed, the engine "
+								  "must not see it.");
+				}
+			}
+
 			// Never lets anything escape into the engine, on any path - this
 			// runs inside an engine function, which is the least forgiving
 			// place in the plugin to throw from.

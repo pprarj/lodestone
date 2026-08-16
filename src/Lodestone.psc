@@ -348,6 +348,28 @@ Bool Function WakeActor(Actor akActor) global native
 ; returns True. That is what makes it safe to reapply after a game load
 ; without checking anything first - see PERSISTENCE above.
 ;
+; AS OF 1.13.0 THIS CALL ARMS THE FALL, AND YOU FINISH IT FROM PAPYRUS:
+;
+;     If Lodestone.KnockoutFall(akTarget)
+;         akTarget.SetUnconscious(True)
+;     EndIf
+;
+; The reason is not style. Everything this call can do from the outside was
+; tried across eight versions and none of it held the actor down, because a
+; Papyrus call lands between engine frames and the state settles before the
+; next one runs. The work has to happen inside the engine's own unconscious
+; handler, and the only way to get there is for something to call
+; Actor.SetUnconscious - a native that exists in Papyrus and nowhere else.
+;
+; So this call registers the actor, and Lodestone does the real work from
+; inside the handler when SetUnconscious runs on an actor it registered.
+; Nothing happens to an actor you did not register: install Lodestone next to
+; a mod that calls SetUnconscious and that mod behaves exactly as it always
+; did.
+;
+; Waking is the mirror - call SetUnconscious(False) alongside
+; KnockoutRecover.
+;
 ; There is no strength or duration parameter, and there will not be one.
 ; How long the knockout lasts is your timer's decision, as always; how hard
 ; the actor falls is not a decision anybody needs to make.
