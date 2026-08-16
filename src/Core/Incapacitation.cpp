@@ -458,39 +458,34 @@ namespace Lodestone::Core::Incapacitation
 
 		// Lodestone.KnockoutFall(Actor) -> Bool
 		//
-		// Puts a managed-unconscious actor physically on the ground. Refuses a
-		// null actor, one this module is not currently managing, a dead one,
-		// and one whose 3D is not loaded (there is no body to drop). Returns
-		// true if the actor is on the ground when this returns, including the
-		// case where it already was.
+		// Registers an actor for the physical fall. It applies nothing. The
+		// fall itself lands inside the SetUnconscious hook, and only for actors
+		// registered here - so this call arms and that call fires.
 		//
-		// IDEMPOTENT, and that is a requirement rather than a nicety. knockState
-		// is animation state and does not survive a save, so a consumer holding
-		// a knockout across a reload has to reapply the fall without being able
-		// to tell whether it took - it will call this again on an actor that may
-		// or may not still be down. A second impulse on an actor already on the
-		// ground is exactly the "stacked impulse" this guard exists to prevent.
+		// Refuses a null actor and a dead one. Idempotent: registering an actor
+		// already registered returns true and does nothing, which is what makes
+		// it safe for a consumer to reapply after a load without first working
+		// out whether it needs to.
 		//
-		// WHY KnockExplosion AND NOT A HAND-WRITTEN knockState. Writing
-		// knockState directly is what the V1 contract refused to do, because
-		// that field drives the animation graph and a value without the matching
-		// transition is how an actor ends up in a T-pose. KnockExplosion is the
-		// engine's own route into the same state - it is what runs on every
-		// explosion and every Unrelenting Force in the base game - so the engine
-		// performs the whole transition, ragdoll included, and sets knockState
-		// itself to whatever it considers consistent. This does not work around
-		// the V1 restriction; it removes the reason for it.
+		// WHY IT APPLIES NOTHING, given that it used to. Through 1.13.2 this
+		// ran the whole sequence and the hook ran it again fourteen
+		// milliseconds later. Measured by phase in the consumer's trace: the
+		// first application threw the actor 56 units up and left it settling 35
+		// units above standing height; the second wrote kDown and held it there.
+		// The result looked like an actor stuck in mid-air and was in fact an
+		// actor held correctly in the place the first impulse had thrown it.
 		//
-		// ALTERNATIVE NOT TAKEN, and the first thing to try if this one needs
-		// tuning it cannot get: AIProcess::KnockParalyze(Actor*) (AIProcess.h:184)
-		// takes no position and no magnitude, which would retire both constants
-		// above and the direction question with them. It was not chosen because
-		// this module's own history argues against reaching for paralysis: the
-		// documented Papyrus-era predecessor in this space combined an
-		// unconscious state with a paralysis effect and produced NPCs that never
-		// got up. That risk is about state management rather than about this
-		// specific call, and this module owns its recovery path - so the
-		// objection is weaker than it looks and this stays a live option.
+		// The second application was doing its job. The first was the defect,
+		// and it was unreachable by testing: only this call registers,
+		// registering is what arms the hook, so every application the hook made
+		// landed on an actor that had already been launched. No ordering on
+		// either side produced a single application.
+		//
+		// So the impulse lives in one place, and it is the place that works.
+		// Everything the sequence needs - the AI process, the 3D, the life
+		// state cycle, the nudge, the state writes - is checked and done at the
+		// hook, at the moment it applies. Checking any of it here would answer
+		// for an instant that no longer matters by the time it is used.
 		bool KnockoutFall(RE::StaticFunctionTag*, RE::Actor* a_actor)
 		{
 			if (!a_actor) {
@@ -500,26 +495,34 @@ namespace Lodestone::Core::Incapacitation
 
 			const auto formID = a_actor->GetFormID();
 
-			// MANAGED STATE IS NO LONGER REQUIRED, AND THE REASON IS AN
-			// EXPERIMENT THE OLD RULE MADE IMPOSSIBLE TO RUN.
+			// THIS CALL REGISTERS AND DOES NOTHING ELSE, WHICH IS WHAT THE
+			// DOCUMENTATION HAS SAID ALL ALONG AND WHAT THE CODE FINALLY DOES.
 			//
-			// Requiring it forced KnockoutActor to run first, which meant this
-			// function was only ever called on an actor already in kUnconcious.
-			// The reference implementation reaches the same physical sequence
-			// from a LIVING actor, after the engine's own SetUnconscious native
-			// has run - a native CommonLibSSE-NG does not expose, so the only
-			// way to put it in front of this sequence is from the consumer's
-			// Papyrus, and the old precondition refused exactly that ordering.
+			// Through 1.13.2 it also ran the whole physical sequence, and the
+			// hook ran it again fourteen milliseconds later. The consumer's
+			// trace separated the two by phase and measured what each did: the
+			// first launched the actor 56 units UP and let it settle 35 units
+			// above where it had been standing; the second wrote kDown and
+			// froze it there. The actor was not stuck in the air by accident -
+			// it was held, successfully, in the wrong place, because something
+			// had thrown it there first.
 			//
-			// Relaxing it costs nothing structurally: the fallen set has always
-			// been separate from the managed registry, precisely because being
-			// on the ground and being managed-unconscious do not start or end
-			// together. KnockoutRecover works off the fallen set alone and does
-			// not care whether the actor was ever managed.
+			// The second application was working. The first was the defect, and
+			// it could not even be tested around: only this call registers, and
+			// registering is what arms the hook, so every application the hook
+			// ever made landed on an already-launched actor. There was no path -
+			// not from the consumer, not from the console - that produced a
+			// single application.
+			//
+			// So the impulse belongs to one place, and it is the place that
+			// works: inside the handler. Here, nothing is applied. No nudge, no
+			// life state, no state writes.
 			bool managed = false;
+			bool alreadyFallen = false;
 			{
 				std::lock_guard lock(g_registryLock);
 				managed = g_registry.contains(formID);
+				alreadyFallen = g_fallen.contains(formID);
 			}
 
 			if (a_actor->IsDead()) {
@@ -527,188 +530,46 @@ namespace Lodestone::Core::Incapacitation
 				return false;
 			}
 
-			if (!a_actor->Is3DLoaded()) {
-				spdlog::warn("Incapacitation: KnockoutFall called on actor (0x{:08X}) with no 3D loaded - "
-							 "ignored, there is no body to knock down.",
+			if (alreadyFallen) {
+				spdlog::info("Incapacitation: KnockoutFall on actor (0x{:08X}) - already registered, nothing "
+							 "to do. Call SetUnconscious(True) to apply the fall.",
 					formID);
-				return false;
-			}
-
-			// Two guards against a second impulse, and they are NOT interchangeable.
-			//
-			// 1.12.0 combined them with an OR and the fall never happened once.
-			// IsInRagdollState() answers true for an actor in kUnconcious, which
-			// is the life state KnockoutActor just set - and this native refuses
-			// an actor it is not already managing, so every call arrives in
-			// exactly that state. The weak guard therefore fired on 100% of
-			// calls, by construction of the API, and KnockExplosion was never
-			// reached. Three calls out of three in the first play test, with the
-			// contradiction visible inside one log line: ragdoll true, knock
-			// state 0, recorded false. An actor genuinely on the ground does not
-			// have a knock state of zero.
-			//
-			// So the module's own record decides on its own, and the engine's
-			// opinion only counts when the knock state corroborates it. That
-			// second case is a real one worth keeping - an actor another mod
-			// knocked down should not get a second impulse from here - but it
-			// has to be a state the engine actually put the actor in, not a
-			// side effect of the life state this module set a moment ago.
-			//
-			// After a load the record is empty by design, so the consumer's
-			// reapply still goes through. That is the case it exists for.
-			bool alreadyFallen = false;
-			{
-				std::lock_guard lock(g_registryLock);
-				alreadyFallen = g_fallen.contains(formID);
-			}
-
-			// IsDownKnockState rather than "anything but kNormal": kGetUp is an
-			// actor on its way back to its feet, which is the opposite of a
-			// reason to skip knocking it down.
-			const auto guardKnockState = ReadKnockState(a_actor);
-			const bool engineHasItDown = a_actor->IsInRagdollState() && IsDownKnockState(guardKnockState);
-
-			if (alreadyFallen || engineHasItDown) {
-				// Two distinct messages on purpose: "this module already dropped
-				// it" and "something else did" are different situations, and a
-				// shared message is what made the 1.12.0 defect need a play
-				// session to see instead of a log line.
-				if (alreadyFallen) {
-					spdlog::info("Incapacitation: KnockoutFall on actor (0x{:08X}) - this module already "
-								 "knocked it down (knock state {}, ragdoll {}), no second impulse applied.",
-						formID, static_cast<std::uint32_t>(guardKnockState), a_actor->IsInRagdollState());
-				} else {
-					spdlog::info("Incapacitation: KnockoutFall on actor (0x{:08X}) - already on the ground "
-								 "from somewhere else (knock state {}, life state {}), no impulse applied. "
-								 "Recording it as fallen so KnockoutRecover will bring it back up.",
-						formID, static_cast<std::uint32_t>(guardKnockState),
-						static_cast<std::uint32_t>(ReadLifeState(a_actor)));
-				}
-
-				std::lock_guard lock(g_registryLock);
-				g_fallen.emplace(formID, FallenState{});
 				return true;
 			}
 
-			auto* process = a_actor->GetActorRuntimeData().currentProcess;
-			if (!process) {
-				spdlog::warn("Incapacitation: KnockoutFall found no AI process on actor (0x{:08X}) - refused.",
-					formID);
-				return false;
-			}
-
+			// The 3D and AI-process checks that used to live here are gone with
+			// the sequence they guarded. They belong at the moment of
+			// application, which is now inside the handler, and they are there.
+			// Checking them at registration would only answer for an instant
+			// that no longer matters.
 			try {
-				const auto beforeLife = ReadLifeState(a_actor);
-				const auto beforeSit = ReadSitSleepState(a_actor);
-
-				// THE ORDER IS THE MECHANISM. Every earlier version performed
-				// one piece of this sequence in isolation, and no piece works
-				// alone.
-				//
-				// 1. The AI process has to be at high, or the physics call has
-				//    nothing to act on.
-				if (!process->InHighProcess()) {
-					auto* owner = process->GetUserData();
-					if (!owner || !owner->MoveToHigh()) {
-						spdlog::warn("Incapacitation: KnockoutFall could not bring actor (0x{:08X}) to high "
-									 "process - refused, the physics transition would have nothing to act on.",
-							formID);
-						return false;
-					}
-				}
-
-				// 2. Back to kAlive first. This looks like undoing the knockout
-				//    and is not: what follows is a transition OUT of a living
-				//    state, and every previous version started it from
-				//    kUnconcious - which is where KnockoutActor leaves the
-				//    actor - asking the engine to leave a state it was already
-				//    in.
-				a_actor->SetLifeState(RE::ACTOR_LIFE_STATE::kAlive);
-
-				// 3. The nudge, from the actor's own position. With a magnitude
-				//    this small there is no force worth aiming, and the 64-unit
-				//    offset earlier versions used existed to aim a shove that
-				//    should never have been a shove.
-				const auto position = a_actor->GetPosition();
-				process->KnockExplosion(a_actor, position, kFallNudge);
-
-				// 4. And back down.
-				a_actor->SetLifeState(RE::ACTOR_LIFE_STATE::kUnconcious);
-
-				// 5. The state that is meant to hold, and this is the one piece
-				//    nobody had tried.
-				//
-				//    knockState is written for completeness and is NOT expected
-				//    to carry anything: 1.12.2 proved the engine overwrites it,
-				//    and nothing since has contradicted that.
-				//
-				//    sitSleepState is the real candidate, and it is set through
-				//    DoSetSitSleepState rather than by writing the bitfield.
-				//    That distinction is the whole lesson of this trail. There
-				//    is no SetKnockState anywhere in the library - knockState
-				//    has a getter and nothing else, which is consistent with it
-				//    being something the engine reports. sitSleepState has a
-				//    dedicated virtual (ActorState.h:153), so the engine has a
-				//    formal way to be TOLD, and going through it runs the
-				//    engine's own code instead of poking the bit it derives.
-				//
-				//    Honest about the odds: nothing in the headers promises
-				//    this sticks where knockState did not. The reference
-				//    implementation appears to write the bitfield directly and
-				//    works in game, so the raw write may well be enough - but
-				//    given a choice between poking a field and calling the
-				//    function the engine provides for it, this trail has
-				//    already paid to learn which one is worth trying first.
-				a_actor->AsActorState()->actorState1.knockState = RE::KNOCK_STATE_ENUM::kDown;
-				const bool sitSleepAccepted =
-					a_actor->AsActorState()->DoSetSitSleepState(RE::SIT_SLEEP_STATE::kIsSleeping);
-
-				// Both of the above are OURS. Saying so in the log is not
-				// decoration: round 7 read `knock 0 -> 7` as the engine finally
-				// choosing kDown, which would have been real progress, and it
-				// was this write. A number in a log that does not say who put it
-				// there costs a round to disambiguate.
-
-				// EVERY READING HERE IS TAKEN TOO EARLY TO MEAN MUCH, and that
-				// is worth stating in the file rather than relearning. The
-				// physics and the state machine both run over the frames after
-				// this returns: 1.12.2 reported `knock state 0 -> 0` and the
-				// animation trace caught the same actor at knock state 2 ten
-				// milliseconds later. That reading is why 1.12.2 concluded the
-				// engine chose nothing and went off to write the field by hand.
-				//
-				// What these numbers are good for is the BEFORE half, and for
-				// showing that each step of the sequence was reached. The AFTER
-				// half of the story is the animation trace and the readings
-				// KnockoutRecover takes at the end of the window.
-				spdlog::info("Incapacitation: KnockoutFall on actor (0x{:08X}) - sequence applied, managed {}. "
-							 "knock {} -> {} (WRITTEN BY US, not the engine choosing), life {} -> {}, "
-							 "sit/sleep {} -> {} (WRITTEN BY US, DoSetSitSleepState returned {}), z {:.1f}, "
-							 "nudge {:g}. Every reading here is pre-physics - the trace and KnockoutRecover "
-							 "carry the outcome.",
-					formID, managed, static_cast<std::uint32_t>(guardKnockState),
-					static_cast<std::uint32_t>(ReadKnockState(a_actor)),
-					static_cast<std::uint32_t>(beforeLife), static_cast<std::uint32_t>(ReadLifeState(a_actor)),
-					static_cast<std::uint32_t>(beforeSit), static_cast<std::uint32_t>(ReadSitSleepState(a_actor)),
-					sitSleepAccepted, position.z, kFallNudge);
-
 				{
-					// The sequence above moved the life state. If nothing else
-					// is managing this actor, this call owns putting it back -
-					// see FallenState::ownsLifeState.
 					FallenState state;
-					state.ownsLifeState = !managed;
+
+					// Nothing here moves the life state any more, so nothing here
+					// owes it back. The native the consumer is about to call owns
+					// it in both directions: SetUnconscious(True) sets it and
+					// SetUnconscious(False) restores it. The flag stays for the
+					// managed path's benefit and is simply never set by this
+					// call.
+					state.ownsLifeState = false;
 
 					std::lock_guard lock(g_registryLock);
 					g_fallen.emplace(formID, state);
 				}
 
-				// Registered after the entry exists, because the sink filters on
-				// it - an event arriving between the two would be discarded.
-				// Observation only; this changes nothing about the fall.
+				// The observation sink goes on at registration so the trace
+				// covers the application when it happens, rather than starting
+				// after it.
 				a_actor->AddAnimationGraphEventSink(AnimationSink::GetSingleton());
+
+				spdlog::info("Incapacitation: KnockoutFall registered actor (0x{:08X}) - managed {}, life {}, "
+							 "knock {}. NOTHING APPLIED HERE. The fall lands when SetUnconscious(True) runs "
+							 "on this actor; without that call this is a no-op.",
+					formID, managed, static_cast<std::uint32_t>(ReadLifeState(a_actor)),
+					static_cast<std::uint32_t>(ReadKnockState(a_actor)));
 			} catch (...) {
-				spdlog::error("Incapacitation: KnockoutFall threw on actor (0x{:08X}) - not recorded as fallen.",
+				spdlog::error("Incapacitation: KnockoutFall threw on actor (0x{:08X}) - not registered.",
 					formID);
 				return false;
 			}
