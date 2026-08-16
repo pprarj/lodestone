@@ -8,8 +8,10 @@
 
 #include "Incapacitation.h"
 
+#include <functional>
 #include <limits>
 #include <mutex>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -52,6 +54,15 @@ namespace Lodestone::Core::Incapacitation
 			std::uint32_t blockedGetUps = 0;
 			std::uint32_t loggedAnimEvents = 0;
 
+			// Last animation event written for this actor, so runs of the same
+			// event at the same knock state collapse to one line. Without this
+			// the budget goes to repetition: one knockout spent 53 of its 60
+			// lines on consecutive AddCharacterControllerToWorld at knock 1, and
+			// the trace went quiet six tenths of a second after the fall - long
+			// before the actor got back up, which was the thing being watched.
+			std::size_t   lastTagHash = 0;
+			std::uint32_t lastKnock = 0xFFFFFFFFU;
+
 			// Whether KnockoutFall is the one that put this actor into
 			// kUnconcious, and therefore the one that owes it a way back.
 			//
@@ -72,11 +83,11 @@ namespace Lodestone::Core::Incapacitation
 
 		std::unordered_map<RE::FormID, FallenState> g_fallen;
 
-		// How many animation events to write per knockout before going quiet.
-		// High enough to cover the fall and the second or two in which the actor
-		// gets back up - which is the whole question - and low enough that one
-		// knockout cannot bury the log.
-		constexpr std::uint32_t kMaxLoggedAnimEvents = 60;
+		// How many DISTINCT animation events to write per knockout before going
+		// quiet. Distinct is what makes the budget go far enough: repetition is
+		// collapsed before it is counted, so this covers transitions rather
+		// than frames.
+		constexpr std::uint32_t kMaxLoggedAnimEvents = 120;
 
 		// The magnitude handed to KnockExplosion, and it is deliberately the
 		// smallest positive float rather than a force.
@@ -251,6 +262,11 @@ namespace Lodestone::Core::Incapacitation
 					// animation events reach other kinds of reference too.
 					const auto formID = a_event->holder->GetFormID();
 
+					auto* actorForState = static_cast<RE::Actor*>(a_event->holder);
+					const auto tagHash = std::hash<std::string_view>{}(
+						a_event->tag.empty() ? std::string_view{} : std::string_view{ a_event->tag.c_str() });
+					const auto knockNow = static_cast<std::uint32_t>(ReadKnockState(actorForState));
+
 					bool report = false;
 					{
 						std::lock_guard lock(g_registryLock);
@@ -259,12 +275,22 @@ namespace Lodestone::Core::Incapacitation
 							return RE::BSEventNotifyControl::kContinue;
 						}
 
+						// Same event, same knock state as the line before it: the
+						// engine repeating itself, which says nothing a second
+						// time. Skipped before the budget is charged.
+						if (it->second.lastTagHash == tagHash && it->second.lastKnock == knockNow) {
+							return RE::BSEventNotifyControl::kContinue;
+						}
+
+						it->second.lastTagHash = tagHash;
+						it->second.lastKnock = knockNow;
+
 						if (it->second.loggedAnimEvents < kMaxLoggedAnimEvents) {
 							++it->second.loggedAnimEvents;
 							report = true;
 						} else if (it->second.loggedAnimEvents == kMaxLoggedAnimEvents) {
 							++it->second.loggedAnimEvents;
-							spdlog::info("Incapacitation: [obs] actor (0x{:08X}) - reached {} logged animation "
+							spdlog::info("Incapacitation: [obs] actor (0x{:08X}) - reached {} distinct animation "
 										 "events, going quiet for the rest of this knockout.",
 								formID, kMaxLoggedAnimEvents);
 						}
@@ -1003,15 +1029,36 @@ namespace Lodestone::Core::Incapacitation
 						}
 					}
 
-					// The reference implementation's sequence, run where it runs
-					// it. Same steps as KnockoutFall has been running from the
-					// outside; the difference this version tests is the place,
-					// not the recipe.
-					a_actor->SetLifeState(RE::ACTOR_LIFE_STATE::kUnconcious);
-
+					// NO KnockExplosion HERE ANY MORE, AND THE MEASUREMENT IS
+					// WHY.
+					//
+					// The trace of a single application on a standing actor: the
+					// state written here lasted twelve milliseconds. knockState
+					// went 7 -> 2 -> 1 - kDown to kExplodeLeadIn to kExplode -
+					// alongside Collision_RecoilCancelable and
+					// Collision_SRecoil_FailSafe, and z jumped 65 units in nine
+					// milliseconds. The recoil state machine overwrote what we
+					// had just written, ran its course, and put the actor back
+					// on its feet.
+					//
+					// That happens with a magnitude of 1.17549e-38, from inside
+					// the handler. The place does not change it: KnockExplosion
+					// is the recoil, and asking for a recoil at any strength
+					// starts the machine that undoes this.
+					//
+					// It also corrects a reading taken from the round where two
+					// applications ran. The second one looked stable there only
+					// because the first had already thrown the actor into the
+					// air - there was nowhere left to launch it to.
+					//
+					// What the same trace shows working: the state holds when
+					// the actor is ALREADY on the ground. The console round that
+					// succeeded applied it to a settled body. So the state write
+					// stays and the impulse goes, and what this round has to
+					// answer is whether the state alone puts the actor down or
+					// only keeps it there.
 					const auto position = a_actor->GetPosition();
 					a_actor->SetLifeState(RE::ACTOR_LIFE_STATE::kAlive);
-					process->KnockExplosion(a_actor, position, kFallNudge);
 					a_actor->SetLifeState(RE::ACTOR_LIFE_STATE::kUnconcious);
 
 					a_actor->AsActorState()->actorState1.knockState = RE::KNOCK_STATE_ENUM::kDown;
