@@ -367,8 +367,19 @@ Bool Function WakeActor(Actor akActor) global native
 ; a mod that calls SetUnconscious and that mod behaves exactly as it always
 ; did.
 ;
-; Waking is the mirror - call SetUnconscious(False) alongside
-; KnockoutRecover.
+; WAKING IS THE MIRROR, AND THE ORDER MATTERS THERE:
+;
+;     akTarget.SetUnconscious(False)      ; FIRST - releases from inside
+;     Lodestone.KnockoutRecover(akTarget) ; then clean up
+;
+; SetUnconscious(False) comes first because the release happens inside the
+; same handler the fall used, and it only recognises actors still registered.
+; KnockoutRecover unregisters, so calling it first leaves nothing for the
+; handler to release. It does write a get-up state itself as a fallback, but
+; that is the half that never held on its own - do not rely on it.
+;
+; Getting this order wrong leaves the actor on the ground permanently. If you
+; can only make one call, make it SetUnconscious(False).
 ;
 ; There is no strength or duration parameter, and there will not be one.
 ; How long the knockout lasts is your timer's decision, as always; how hard

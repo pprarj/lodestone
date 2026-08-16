@@ -826,10 +826,21 @@ namespace Lodestone::Core::Incapacitation
 						formID);
 				}
 
-				// knockState is not written here. 1.12.2 settled that the field
-				// is the engine's to set, and writing kGetUp into an actor still
-				// in life state 3 is an interaction the consumer flagged and
-				// nobody has tested. Nothing needs reordering on either side.
+				// knockState IS written here again, and the reasoning that
+				// removed it in 1.12.5 was right for its time and wrong now.
+				// Back then the field never held, so reverting it was undoing
+				// nothing. Once the fall started holding, the same field became
+				// what keeps an actor on the ground, and leaving it set is how
+				// the first successful fall produced an actor that could not get
+				// up at all.
+				//
+				// Best effort rather than the main path. The revert that
+				// actually takes hold is the one inside the disable handler,
+				// which needs the consumer to call SetUnconscious(False). This
+				// covers the case where that call never comes, or comes after
+				// this one - by then the actor has left the fallen set and the
+				// handler no longer recognises it.
+				a_actor->AsActorState()->actorState1.knockState = RE::KNOCK_STATE_ENUM::kGetUp;
 
 				// The 3D resync is the half with no Papyrus equivalent, and the
 				// reference implementation in this space treats it - rather than
@@ -1042,8 +1053,10 @@ namespace Lodestone::Core::Incapacitation
 
 			static bool DisableThunk(RE::Actor* a_actor, bool a_enable)
 			{
+				const auto ret = reinterpret_cast<SetUnconsciousFn>(disableOriginal)(a_actor, a_enable);
 				Report("disable", a_actor, a_enable);
-				return reinterpret_cast<SetUnconsciousFn>(disableOriginal)(a_actor, a_enable);
+				RevertInsideHandler(a_actor);
+				return ret;
 			}
 
 			static inline std::uintptr_t enableOriginal = 0;
@@ -1123,6 +1136,70 @@ namespace Lodestone::Core::Incapacitation
 						static_cast<std::uint32_t>(ReadSitSleepState(a_actor)), sitSleepAccepted, position.z);
 				} catch (...) {
 					spdlog::error("Incapacitation: the inside-handler sequence threw - swallowed, the engine "
+								  "must not see it.");
+				}
+			}
+
+			// THE MIRROR, AND IT IS NOT OPTIONAL ANY MORE.
+			//
+			// While the state never stuck, recovery could afford to be sloppy -
+			// 1.12.5 dropped the kGetUp write on the grounds that it had never
+			// worked. It had never worked because nothing it was undoing had
+			// worked either. The first version that made the fall hold also
+			// made the actor impossible to get up, which is the same failure
+			// mode this module refused KnockParalyze over, arriving for the
+			// third time by a different door.
+			//
+			// So the revert runs where the apply runs. Same reasoning: if the
+			// state only takes hold from inside the handler, it can only be
+			// released from inside the handler.
+			static void RevertInsideHandler(RE::Actor* a_actor)
+			{
+				if (!a_actor) {
+					return;
+				}
+
+				try {
+					const auto formID = a_actor->GetFormID();
+
+					{
+						std::lock_guard lock(g_registryLock);
+						if (!g_fallen.contains(formID)) {
+							return;
+						}
+					}
+
+					if (a_actor->IsDead()) {
+						return;
+					}
+
+					// kGetUp rather than kNormal: the actor is not standing yet,
+					// it is being told to stand. kNormal would claim the
+					// transition already happened.
+					auto* state = a_actor->AsActorState();
+					state->actorState1.knockState = RE::KNOCK_STATE_ENUM::kGetUp;
+					state->DoSetSitSleepState(RE::SIT_SLEEP_STATE::kNormal);
+
+					// The same nudge as the way down. The reference
+					// implementation makes this call on both halves, and the
+					// point is the same on both: it is not a push, it is what
+					// drives the physics transition.
+					if (auto* process = a_actor->GetActorRuntimeData().currentProcess;
+						process && a_actor->Is3DLoaded()) {
+						process->KnockExplosion(a_actor, a_actor->GetPosition(), kFallNudge);
+					}
+
+					a_actor->Update3DModel();
+					a_actor->UpdateActor3DPosition();
+					a_actor->EvaluatePackage(true, true);
+
+					spdlog::info("Incapacitation: [inside] reverted actor (0x{:08X}) from inside the handler - "
+								 "knock {}, sit/sleep {}, life {}, 3D resynced and package re-evaluated.",
+						formID, static_cast<std::uint32_t>(ReadKnockState(a_actor)),
+						static_cast<std::uint32_t>(ReadSitSleepState(a_actor)),
+						static_cast<std::uint32_t>(ReadLifeState(a_actor)));
+				} catch (...) {
+					spdlog::error("Incapacitation: the inside-handler revert threw - swallowed, the engine "
 								  "must not see it.");
 				}
 			}
