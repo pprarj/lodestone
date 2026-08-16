@@ -481,14 +481,26 @@ namespace Lodestone::Core::Incapacitation
 
 			const auto formID = a_actor->GetFormID();
 
+			// MANAGED STATE IS NO LONGER REQUIRED, AND THE REASON IS AN
+			// EXPERIMENT THE OLD RULE MADE IMPOSSIBLE TO RUN.
+			//
+			// Requiring it forced KnockoutActor to run first, which meant this
+			// function was only ever called on an actor already in kUnconcious.
+			// The reference implementation reaches the same physical sequence
+			// from a LIVING actor, after the engine's own SetUnconscious native
+			// has run - a native CommonLibSSE-NG does not expose, so the only
+			// way to put it in front of this sequence is from the consumer's
+			// Papyrus, and the old precondition refused exactly that ordering.
+			//
+			// Relaxing it costs nothing structurally: the fallen set has always
+			// been separate from the managed registry, precisely because being
+			// on the ground and being managed-unconscious do not start or end
+			// together. KnockoutRecover works off the fallen set alone and does
+			// not care whether the actor was ever managed.
+			bool managed = false;
 			{
 				std::lock_guard lock(g_registryLock);
-				if (!g_registry.contains(formID)) {
-					spdlog::warn("Incapacitation: KnockoutFall called on actor (0x{:08X}) this module is not "
-								 "managing - refused. Call KnockoutActor first and check that it returned True.",
-						formID);
-					return false;
-				}
+				managed = g_registry.contains(formID);
 			}
 
 			if (a_actor->IsDead()) {
@@ -632,6 +644,12 @@ namespace Lodestone::Core::Incapacitation
 				const bool sitSleepAccepted =
 					a_actor->AsActorState()->DoSetSitSleepState(RE::SIT_SLEEP_STATE::kIsSleeping);
 
+				// Both of the above are OURS. Saying so in the log is not
+				// decoration: round 7 read `knock 0 -> 7` as the engine finally
+				// choosing kDown, which would have been real progress, and it
+				// was this write. A number in a log that does not say who put it
+				// there costs a round to disambiguate.
+
 				// EVERY READING HERE IS TAKEN TOO EARLY TO MEAN MUCH, and that
 				// is worth stating in the file rather than relearning. The
 				// physics and the state machine both run over the frames after
@@ -644,11 +662,12 @@ namespace Lodestone::Core::Incapacitation
 				// showing that each step of the sequence was reached. The AFTER
 				// half of the story is the animation trace and the readings
 				// KnockoutRecover takes at the end of the window.
-				spdlog::info("Incapacitation: KnockoutFall on actor (0x{:08X}) - sequence applied. "
-							 "knock {} -> {}, life {} -> {}, sit/sleep {} -> {} (DoSetSitSleepState returned "
-							 "{}), z {:.1f}, nudge {:g}. Readings this early are pre-physics - the trace and "
-							 "KnockoutRecover carry the outcome.",
-					formID, static_cast<std::uint32_t>(guardKnockState),
+				spdlog::info("Incapacitation: KnockoutFall on actor (0x{:08X}) - sequence applied, managed {}. "
+							 "knock {} -> {} (WRITTEN BY US, not the engine choosing), life {} -> {}, "
+							 "sit/sleep {} -> {} (WRITTEN BY US, DoSetSitSleepState returned {}), z {:.1f}, "
+							 "nudge {:g}. Every reading here is pre-physics - the trace and KnockoutRecover "
+							 "carry the outcome.",
+					formID, managed, static_cast<std::uint32_t>(guardKnockState),
 					static_cast<std::uint32_t>(ReadKnockState(a_actor)),
 					static_cast<std::uint32_t>(beforeLife), static_cast<std::uint32_t>(ReadLifeState(a_actor)),
 					static_cast<std::uint32_t>(beforeSit), static_cast<std::uint32_t>(ReadSitSleepState(a_actor)),

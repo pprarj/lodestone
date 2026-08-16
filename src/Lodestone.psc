@@ -336,10 +336,13 @@ Bool Function KnockoutActor(Actor akActor) global native
 ; managed actor. Never throws.
 Bool Function WakeActor(Actor akActor) global native
 
-; Puts akActor physically on the ground. Call it after KnockoutActor has
-; returned True - it refuses (returns False) an actor this module is not
-; already managing, and also a None actor, a dead one, or one whose 3D is
-; not loaded. Never throws.
+; Puts akActor physically on the ground. Refuses (returns False) a None
+; actor, a dead one, or one whose 3D is not loaded. Never throws.
+;
+; It does NOT require the actor to be managed by KnockoutActor, and as of
+; 1.12.6 it no longer refuses one that is not - you may call it before or
+; after KnockoutActor, or without KnockoutActor at all. KnockoutRecover works
+; off this call's own record either way.
 ;
 ; IDEMPOTENT: calling it on an actor that is already down does nothing and
 ; returns True. That is what makes it safe to reapply after a game load
