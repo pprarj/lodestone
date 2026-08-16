@@ -35,14 +35,28 @@ namespace Lodestone::Core::Incapacitation
 		// NOT PERSISTED, on purpose - see the cosave section below for the
 		// reasoning and what the consumer has to do about it.
 		//
-		// The value counts how many times the get-up hook has stopped the engine
-		// from standing this actor back up. It is the instrument that answers
-		// "did the fall hold", and it answers better than any state field can:
-		// a non-zero count is the engine actively trying to end the knockout and
-		// being refused, which is the capability working. A count of zero at
-		// recovery means the engine never tried - and if the actor did not stay
-		// down either, that points at the hook rather than at the fall.
-		std::unordered_map<RE::FormID, std::uint32_t> g_fallen;
+		// The value is this module's per-actor scratch pad for one knockout.
+		//
+		// blockedGetUps counted the get-ups the hook refused, and its verdict is
+		// already in: across a full window it stayed at zero, which is how we
+		// know the engine does not stand these actors up through the function
+		// that hook is on.
+		//
+		// loggedAnimEvents bounds the observation pass below. An actor produces
+		// a lot of animation events, and a knockout is thirty seconds long.
+		struct FallenState
+		{
+			std::uint32_t blockedGetUps = 0;
+			std::uint32_t loggedAnimEvents = 0;
+		};
+
+		std::unordered_map<RE::FormID, FallenState> g_fallen;
+
+		// How many animation events to write per knockout before going quiet.
+		// High enough to cover the fall and the second or two in which the actor
+		// gets back up - which is the whole question - and low enough that one
+		// knockout cannot bury the log.
+		constexpr std::uint32_t kMaxLoggedAnimEvents = 60;
 
 		// How far above the actor's own origin the knockdown impulse comes
 		// from, in Skyrim units, and how hard it hits.
@@ -145,6 +159,107 @@ namespace Lodestone::Core::Incapacitation
 				return false;
 			}
 		}
+
+		// -------------------------------------------------------------------
+		// Animation observation
+		//
+		// THIS SINK CHANGES NOTHING. It exists because four rounds in a row were
+		// spent the same way - pick a candidate mechanism, implement it, test it
+		// in game, find out it was something else - and each round costs a play
+		// session. The engine knows what it is doing to these actors and names it
+		// out loud in animation events, so this round asks it instead of guessing
+		// a fifth time.
+		//
+		// What the answer has to settle: the actor falls and is back on its feet
+		// in one to two seconds, with knockState never leaving kNormal and the
+		// get-up function never called. Either the engine runs a get-up by some
+		// path nobody has found, or - the reading the consumer favours, and mine
+		// too - nothing gets the actor up at all, because nothing ever decided it
+		// was down: KnockExplosion throws the body and the animation graph
+		// returns to standing when the physics settles. Those two produce very
+		// different event traces, and a `GetUpStart`-shaped tag appearing or not
+		// appearing separates them in one pass.
+		//
+		// Registered per actor on the way down and removed on recovery. The sink
+		// is a singleton with static lifetime, so an actor that dies mid-window
+		// and never reaches recovery leaves a registration behind rather than a
+		// dangling pointer, and the filter below makes it inert - the FormID is
+		// gone from g_fallen by then.
+		// -------------------------------------------------------------------
+
+		class AnimationSink : public RE::BSTEventSink<RE::BSAnimationGraphEvent>
+		{
+		public:
+			static AnimationSink* GetSingleton()
+			{
+				static AnimationSink singleton;
+				return std::addressof(singleton);
+			}
+
+			RE::BSEventNotifyControl ProcessEvent(const RE::BSAnimationGraphEvent*           a_event,
+				RE::BSTEventSource<RE::BSAnimationGraphEvent>*) override
+			{
+				try {
+					if (!a_event || !a_event->holder) {
+						return RE::BSEventNotifyControl::kContinue;
+					}
+
+					// FormID comes off the holder as a TESObjectREFR, before any
+					// cast. The membership check below is what establishes that
+					// this reference is one of the actors this module knocked
+					// down, and therefore that treating it as an Actor is sound -
+					// animation events reach other kinds of reference too.
+					const auto formID = a_event->holder->GetFormID();
+
+					bool report = false;
+					{
+						std::lock_guard lock(g_registryLock);
+						const auto it = g_fallen.find(formID);
+						if (it == g_fallen.end()) {
+							return RE::BSEventNotifyControl::kContinue;
+						}
+
+						if (it->second.loggedAnimEvents < kMaxLoggedAnimEvents) {
+							++it->second.loggedAnimEvents;
+							report = true;
+						} else if (it->second.loggedAnimEvents == kMaxLoggedAnimEvents) {
+							++it->second.loggedAnimEvents;
+							spdlog::info("Incapacitation: [obs] actor (0x{:08X}) - reached {} logged animation "
+										 "events, going quiet for the rest of this knockout.",
+								formID, kMaxLoggedAnimEvents);
+						}
+					}
+
+					if (report) {
+						auto* actor = static_cast<RE::Actor*>(a_event->holder);
+
+						// The state snapshot travels with every event so the log
+						// reads as a timeline rather than a list of names: what
+						// the engine announced, and what the actor looked like at
+						// that moment.
+						spdlog::info("Incapacitation: [obs] actor (0x{:08X}) anim '{}' payload '{}' - knock {}, "
+									 "life {}, z {:.1f}, ragdoll {}.",
+							formID, a_event->tag.c_str(), a_event->payload.c_str(),
+							static_cast<std::uint32_t>(ReadKnockState(actor)),
+							static_cast<std::uint32_t>(ReadLifeState(actor)), actor->GetPosition().z,
+							actor->IsInRagdollState());
+					}
+				} catch (...) {
+					spdlog::error("Incapacitation: the animation observation sink threw - swallowed.");
+				}
+
+				return RE::BSEventNotifyControl::kContinue;
+			}
+
+		private:
+			AnimationSink() = default;
+			AnimationSink(const AnimationSink&) = delete;
+			AnimationSink(AnimationSink&&) = delete;
+			~AnimationSink() override = default;
+			AnimationSink& operator=(const AnimationSink&) = delete;
+			AnimationSink& operator=(AnimationSink&&) = delete;
+		};
+
 
 		// -------------------------------------------------------------------
 		// Natives
@@ -419,7 +534,7 @@ namespace Lodestone::Core::Incapacitation
 				}
 
 				std::lock_guard lock(g_registryLock);
-				g_fallen.emplace(formID, 0U);
+				g_fallen.emplace(formID, FallenState{});
 				return true;
 			}
 
@@ -469,8 +584,15 @@ namespace Lodestone::Core::Incapacitation
 					static_cast<std::uint32_t>(beforeLife), static_cast<std::uint32_t>(ReadLifeState(a_actor)),
 					position.z, kFallImpulse, kFallOriginHeight);
 
-				std::lock_guard lock(g_registryLock);
-				g_fallen.emplace(formID, 0U);
+				{
+					std::lock_guard lock(g_registryLock);
+					g_fallen.emplace(formID, FallenState{});
+				}
+
+				// Registered after the entry exists, because the sink filters on
+				// it - an event arriving between the two would be discarded.
+				// Observation only; this changes nothing about the fall.
+				a_actor->AddAnimationGraphEventSink(AnimationSink::GetSingleton());
 			} catch (...) {
 				spdlog::error("Incapacitation: KnockoutFall threw on actor (0x{:08X}) - not recorded as fallen.",
 					formID);
@@ -513,7 +635,7 @@ namespace Lodestone::Core::Incapacitation
 				std::lock_guard lock(g_registryLock);
 				if (const auto it = g_fallen.find(formID); it != g_fallen.end()) {
 					wasFallen = true;
-					blocked = it->second;
+					blocked = it->second.blockedGetUps;
 					g_fallen.erase(it);
 				}
 			}
@@ -528,6 +650,11 @@ namespace Lodestone::Core::Incapacitation
 					formID);
 				return true;
 			}
+
+			// Paired with the registration in KnockoutFall. Done before anything
+			// else here so the trace ends where the knockout ends, rather than
+			// picking up the get-up this call is about to cause.
+			a_actor->RemoveAnimationGraphEventSink(AnimationSink::GetSingleton());
 
 			try {
 				const auto beforeKnock = ReadKnockState(a_actor);
@@ -688,13 +815,13 @@ namespace Lodestone::Core::Incapacitation
 
 						std::lock_guard lock(g_registryLock);
 						if (const auto it = g_fallen.find(formID); it != g_fallen.end()) {
-							++it->second;
+							++it->second.blockedGetUps;
 
 							// Only the first one is written. The engine may
 							// retry every time it re-evaluates, and a line per
 							// attempt would bury the log of a long knockout;
 							// the total is reported once, by KnockoutRecover.
-							if (it->second == 1) {
+							if (it->second.blockedGetUps == 1) {
 								spdlog::info("Incapacitation: blocked the engine from standing actor "
 											 "(0x{:08X}) back up. This module is holding it down; further "
 											 "attempts are counted, not logged.",
