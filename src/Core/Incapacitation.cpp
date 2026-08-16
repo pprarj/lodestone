@@ -8,6 +8,7 @@
 
 #include "Incapacitation.h"
 
+#include <limits>
 #include <mutex>
 #include <unordered_map>
 #include <unordered_set>
@@ -58,25 +59,32 @@ namespace Lodestone::Core::Incapacitation
 		// knockout cannot bury the log.
 		constexpr std::uint32_t kMaxLoggedAnimEvents = 60;
 
-		// How far above the actor's own origin the knockdown impulse comes
-		// from, in Skyrim units, and how hard it hits.
+		// The magnitude handed to KnockExplosion, and it is deliberately the
+		// smallest positive float rather than a force.
 		//
-		// These are NOT balance numbers and never become parameters. The
-		// consumer has exactly one requirement of this call - the target goes
-		// down - and no opinion about how hard. A float on the signature would
-		// turn "make it work" into "decide how it looks", which is policy, and
-		// policy does not live in this DLL. Duration is the balance decision
-		// here and it is already the consumer's, as it was in V1.
+		// 1.12.x through 1.12.4 passed 1.0 and read that as conservative. It
+		// was not: the animation trace showed the actor going through
+		// kExplodeLeadIn into kExplode, firing Collision_RecoilCancelable and
+		// Collision_SRecoil_FailSafe. That is the engine's RECOIL path, which
+		// is transitory by design - it plays and resolves itself, which is
+		// exactly why the actor got back up and why no get-up was ever
+		// initiated. A push big enough to be a push is a push the engine will
+		// undo.
 		//
-		// UNMEASURED. Both values are conservative starting points, not
-		// observations: KnockExplosion pushes away from a_location, so an
-		// origin above the actor drives the impulse downward - a collapse
-		// rather than a launch - and a small magnitude fails by doing too
-		// little rather than by throwing a body across the room. The
-		// instrumented log below exists to calibrate them in game. Do not
-		// read these as tuned.
-		constexpr float kFallOriginHeight = 64.0F;
-		constexpr float kFallImpulse = 1.0F;
+		// This call is not here for the shove. It is here for its side effect:
+		// it drives the physics/ragdoll transition on an actor that the steps
+		// around it have already prepared. A magnitude this small cannot
+		// trigger the recoil the trace caught. The published reference
+		// implementation in this space passes the same thing, and it works in
+		// game.
+		//
+		// Still not a balance number, and still never a parameter - the
+		// consumer's only requirement is that the target goes down.
+		//
+		// The parentheses around the call are load bearing, not style: Windows
+		// defines a `min` macro, and without them the preprocessor eats this
+		// line before the compiler sees it.
+		constexpr float kFallNudge = (std::numeric_limits<float>::min)();
 
 		// Dispatches OnActorWoke to every registered script. Same shape and
 		// same dispatch mechanism (QueueEvent, off the caller's stack) as
@@ -135,6 +143,19 @@ namespace Lodestone::Core::Incapacitation
 		RE::KNOCK_STATE_ENUM ReadKnockState(RE::Actor* a_actor)
 		{
 			return a_actor->AsActorState()->GetKnockState();
+		}
+
+		// Reads an actor's sit/sleep state. Same accessor rule as the two
+		// above - it is the neighbouring bitfield in ActorState1.
+		//
+		//   ActorState.h:113   SIT_SLEEP_STATE sitSleepState: 4
+		//   ActorState.h:65    kNormal 0, kWantToSit 1, kWaitingForSitAnim 2,
+		//                      kIsSitting 3, kWantToStand 4, kWantToSleep 5,
+		//                      kWaitingForSleepAnim 6, kIsSleeping 7,
+		//                      kWantToWake 8
+		RE::SIT_SLEEP_STATE ReadSitSleepState(RE::Actor* a_actor)
+		{
+			return a_actor->AsActorState()->GetSitSleepState();
 		}
 
 		// Is this knock state one where the actor is on the ground, or on the
@@ -547,42 +568,91 @@ namespace Lodestone::Core::Incapacitation
 
 			try {
 				const auto beforeLife = ReadLifeState(a_actor);
+				const auto beforeSit = ReadSitSleepState(a_actor);
+
+				// THE ORDER IS THE MECHANISM. Every earlier version performed
+				// one piece of this sequence in isolation, and no piece works
+				// alone.
+				//
+				// 1. The AI process has to be at high, or the physics call has
+				//    nothing to act on.
+				if (!process->InHighProcess()) {
+					auto* owner = process->GetUserData();
+					if (!owner || !owner->MoveToHigh()) {
+						spdlog::warn("Incapacitation: KnockoutFall could not bring actor (0x{:08X}) to high "
+									 "process - refused, the physics transition would have nothing to act on.",
+							formID);
+						return false;
+					}
+				}
+
+				// 2. Back to kAlive first. This looks like undoing the knockout
+				//    and is not: what follows is a transition OUT of a living
+				//    state, and every previous version started it from
+				//    kUnconcious - which is where KnockoutActor leaves the
+				//    actor - asking the engine to leave a state it was already
+				//    in.
+				a_actor->SetLifeState(RE::ACTOR_LIFE_STATE::kAlive);
+
+				// 3. The nudge, from the actor's own position. With a magnitude
+				//    this small there is no force worth aiming, and the 64-unit
+				//    offset earlier versions used existed to aim a shove that
+				//    should never have been a shove.
 				const auto position = a_actor->GetPosition();
-				const RE::NiPoint3 origin{ position.x, position.y, position.z + kFallOriginHeight };
+				process->KnockExplosion(a_actor, position, kFallNudge);
 
-				process->KnockExplosion(a_actor, origin, kFallImpulse);
+				// 4. And back down.
+				a_actor->SetLifeState(RE::ACTOR_LIFE_STATE::kUnconcious);
 
-				// NOTHING IS WRITTEN TO knockState HERE, ON PURPOSE, AND THIS IS
-				// NOT AN OVERSIGHT. 1.12.2 wrote kDown at this exact point. The
-				// write landed - the log read the field straight back and saw 7 -
-				// and it changed nothing: the actor still stood up within a second
-				// or two, and by the end of the window the field was back at 0.
-				// Three targets out of three.
+				// 5. The state that is meant to hold, and this is the one piece
+				//    nobody had tried.
 				//
-				// So knockState is an OUTPUT of the engine's state machine, not an
-				// input. Writing it describes what the engine has already decided
-				// and gets overwritten when its recovery advances. There is no
-				// third value worth trying: kOut instead of kDown would relabel a
-				// field the engine discards either way.
+				//    knockState is written for completeness and is NOT expected
+				//    to carry anything: 1.12.2 proved the engine overwrites it,
+				//    and nothing since has contradicted that.
 				//
-				// What holds the actor down is the hook below, which stops the
-				// engine from starting the get-up at all. That is why the write
-				// is gone rather than kept as a belt-and-braces: keeping it would
-				// have made KnockoutRecover write kGetUp into a life state 3 actor
-				// on the way out, which is a real interaction nobody has tested,
-				// bought for a field that provably does nothing.
+				//    sitSleepState is the real candidate, and it is set through
+				//    DoSetSitSleepState rather than by writing the bitfield.
+				//    That distinction is the whole lesson of this trail. There
+				//    is no SetKnockState anywhere in the library - knockState
+				//    has a getter and nothing else, which is consistent with it
+				//    being something the engine reports. sitSleepState has a
+				//    dedicated virtual (ActorState.h:153), so the engine has a
+				//    formal way to be TOLD, and going through it runs the
+				//    engine's own code instead of poking the bit it derives.
 				//
-				// Z goes in the log so the two ends of a knockout can be compared
-				// against each other. It is NOT a check on this call: the physics
-				// runs over the frames after this returns, so the actor has not
-				// moved yet by the time this line is written.
-				spdlog::info("Incapacitation: KnockoutFall on actor (0x{:08X}) - knock state {} -> {}, "
-							 "life state {} -> {}, z {:.1f}, impulse {} from {} units above. Get-up "
-							 "suppression is now armed for this actor.",
+				//    Honest about the odds: nothing in the headers promises
+				//    this sticks where knockState did not. The reference
+				//    implementation appears to write the bitfield directly and
+				//    works in game, so the raw write may well be enough - but
+				//    given a choice between poking a field and calling the
+				//    function the engine provides for it, this trail has
+				//    already paid to learn which one is worth trying first.
+				a_actor->AsActorState()->actorState1.knockState = RE::KNOCK_STATE_ENUM::kDown;
+				const bool sitSleepAccepted =
+					a_actor->AsActorState()->DoSetSitSleepState(RE::SIT_SLEEP_STATE::kIsSleeping);
+
+				// EVERY READING HERE IS TAKEN TOO EARLY TO MEAN MUCH, and that
+				// is worth stating in the file rather than relearning. The
+				// physics and the state machine both run over the frames after
+				// this returns: 1.12.2 reported `knock state 0 -> 0` and the
+				// animation trace caught the same actor at knock state 2 ten
+				// milliseconds later. That reading is why 1.12.2 concluded the
+				// engine chose nothing and went off to write the field by hand.
+				//
+				// What these numbers are good for is the BEFORE half, and for
+				// showing that each step of the sequence was reached. The AFTER
+				// half of the story is the animation trace and the readings
+				// KnockoutRecover takes at the end of the window.
+				spdlog::info("Incapacitation: KnockoutFall on actor (0x{:08X}) - sequence applied. "
+							 "knock {} -> {}, life {} -> {}, sit/sleep {} -> {} (DoSetSitSleepState returned "
+							 "{}), z {:.1f}, nudge {:g}. Readings this early are pre-physics - the trace and "
+							 "KnockoutRecover carry the outcome.",
 					formID, static_cast<std::uint32_t>(guardKnockState),
 					static_cast<std::uint32_t>(ReadKnockState(a_actor)),
 					static_cast<std::uint32_t>(beforeLife), static_cast<std::uint32_t>(ReadLifeState(a_actor)),
-					position.z, kFallImpulse, kFallOriginHeight);
+					static_cast<std::uint32_t>(beforeSit), static_cast<std::uint32_t>(ReadSitSleepState(a_actor)),
+					sitSleepAccepted, position.z, kFallNudge);
 
 				{
 					std::lock_guard lock(g_registryLock);
@@ -659,36 +729,44 @@ namespace Lodestone::Core::Incapacitation
 			try {
 				const auto beforeKnock = ReadKnockState(a_actor);
 
-				// THIS IS WHERE THE LOG ANSWERS "DID THE FALL HOLD", AND THE
-				// ANSWER MOVED.
+				// THIS IS THE READING THAT SETTLES THE ROUND.
 				//
-				// 1.12.2 asked knockState this question and knockState was the
-				// wrong witness: it read kNormal at recovery whether the actor had
-				// never fallen or had fallen and got back up. The count is a
-				// better witness because it records an ACTION rather than a state
-				// - every increment is the engine trying to end the knockout and
-				// being refused, which nothing else can produce.
+				// Taken at the end of the window, when the physics and the state
+				// machine have long since finished - unlike everything
+				// KnockoutFall can see, which is pre-physics by construction.
 				//
-				// Zero is the reading that deserves attention. It means the engine
-				// never once tried to stand this actor up, which is not what the
-				// last three rounds showed it doing, so the likely explanation is
-				// that the hook is not on the function it is supposed to be on.
-				// That is a different failure from the fall not holding, and worth
-				// telling apart in the log rather than after another play session.
-				if (blocked == 0) {
-					spdlog::warn("Incapacitation: KnockoutRecover on actor (0x{:08X}) - the get-up hook never "
-								 "fired for this actor during the whole window. The engine did not try to stand "
-								 "it up, which the last rounds say it should have - suspect the hook, not the "
-								 "fall.",
-						formID);
+				// sitSleepState still kIsSleeping (7) means the state held for
+				// the whole knockout, which is the capability working. Back at
+				// kNormal (0) means the engine let it go, the same way it let
+				// knockState go in 1.12.2, and then the sit/sleep route is
+				// answered too.
+				//
+				// The blocked count is no longer the headline. Zero used to point
+				// at the hook; the trace has since explained it - a recoil is not
+				// a knockdown, so no get-up was ever initiated and there was
+				// nothing to block. It stays in the log because if this sequence
+				// does produce a real knockdown, a get-up may finally be attempted
+				// and the count would be the first place that shows.
+				const auto beforeSit = ReadSitSleepState(a_actor);
+				const bool sitSleepHeld = beforeSit == RE::SIT_SLEEP_STATE::kIsSleeping;
+
+				if (!sitSleepHeld) {
+					spdlog::warn("Incapacitation: KnockoutRecover on actor (0x{:08X}) - sit/sleep state came "
+								 "back {} instead of kIsSleeping (7). The engine let the state go during the "
+								 "window; the fall did not hold, the same way knockState did not.",
+						formID, static_cast<std::uint32_t>(beforeSit));
 				}
 
-				// NOTHING IS WRITTEN TO knockState HERE EITHER, and for the same
-				// reason it is no longer written on the way down: the field is not
-				// what the engine reads. Removing the write also retires an
-				// untested interaction the consumer flagged - it calls this before
-				// WakeActor, so the write would have landed on an actor still in
-				// life state 3. Nobody has to reorder anything now.
+				// Reverting goes through the same door it was set through. Left
+				// alone, an actor released from a knockout would carry a sleeping
+				// sit/sleep state into normal play, which is a worse residue than
+				// anything this module has left behind so far.
+				a_actor->AsActorState()->DoSetSitSleepState(RE::SIT_SLEEP_STATE::kNormal);
+
+				// knockState is not written here. 1.12.2 settled that the field
+				// is the engine's to set, and writing kGetUp into an actor still
+				// in life state 3 is an interaction the consumer flagged and
+				// nobody has tested. Nothing needs reordering on either side.
 
 				// The 3D resync is the half with no Papyrus equivalent, and the
 				// reference implementation in this space treats it - rather than
@@ -702,11 +780,13 @@ namespace Lodestone::Core::Incapacitation
 				// Z against the height KnockoutFall logged for the same actor:
 				// still low means the body was on the ground when the window
 				// ended, back to standing height means it had got up.
-				spdlog::info("Incapacitation: KnockoutRecover on actor (0x{:08X}) - blocked {} get-up "
-							 "attempt(s), knock state {} -> {}, z {:.1f}, ragdoll {}, 3D resynced and package "
-							 "re-evaluated.",
-					formID, blocked, static_cast<std::uint32_t>(beforeKnock),
-					static_cast<std::uint32_t>(ReadKnockState(a_actor)), a_actor->GetPosition().z,
+				spdlog::info("Incapacitation: KnockoutRecover on actor (0x{:08X}) - sit/sleep {} -> {} (held "
+							 "{}), knock {} -> {}, blocked {} get-up attempt(s), z {:.1f}, ragdoll {}, 3D "
+							 "resynced and package re-evaluated.",
+					formID, static_cast<std::uint32_t>(beforeSit),
+					static_cast<std::uint32_t>(ReadSitSleepState(a_actor)), sitSleepHeld,
+					static_cast<std::uint32_t>(beforeKnock),
+					static_cast<std::uint32_t>(ReadKnockState(a_actor)), blocked, a_actor->GetPosition().z,
 					a_actor->IsInRagdollState());
 			} catch (...) {
 				spdlog::error("Incapacitation: KnockoutRecover threw on actor (0x{:08X}) - fallen-set entry "
