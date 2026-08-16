@@ -1051,14 +1051,22 @@ namespace Lodestone::Core::Incapacitation
 					// because the first had already thrown the actor into the
 					// air - there was nowhere left to launch it to.
 					//
-					// What the same trace shows working: the state holds when
-					// the actor is ALREADY on the ground. The console round that
-					// succeeded applied it to a settled body. So the state write
-					// stays and the impulse goes, and what this round has to
-					// answer is whether the state alone puts the actor down or
-					// only keeps it there.
+					// AND THE ANSWER CAME BACK: THE STATE ALONE DOES NOT DROP
+					// ANYONE. Without the impulse the actor stands pacified and
+					// never falls at all, which is worse than falling and
+					// getting up. So the impulse is back, and what it costs is
+					// known rather than suspected - it starts the recoil, the
+					// recoil overwrites this state, and something has to put the
+					// state back once the body has settled.
+					//
+					// Both halves are necessary and neither is sufficient. That
+					// is the whole finding of this round, and it is measured on
+					// four data points: impulse alone gets up, state alone never
+					// falls, the two together seconds apart held, the two
+					// together fourteen milliseconds apart froze mid-air.
 					const auto position = a_actor->GetPosition();
 					a_actor->SetLifeState(RE::ACTOR_LIFE_STATE::kAlive);
+					process->KnockExplosion(a_actor, position, kFallNudge);
 					a_actor->SetLifeState(RE::ACTOR_LIFE_STATE::kUnconcious);
 
 					a_actor->AsActorState()->actorState1.knockState = RE::KNOCK_STATE_ENUM::kDown;
