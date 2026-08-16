@@ -13,6 +13,8 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include <safetyhook.hpp>
+
 #include "SKSE/RegistrationSet.h"
 
 namespace Lodestone::Core::Incapacitation
@@ -1020,11 +1022,24 @@ namespace Lodestone::Core::Incapacitation
 		// and a bool that matches what was asked. Anything else and the address
 		// is wrong.
 		//
-		// TWO CALL SITES, ONE FUNCTION. The handler calls the same implementation
-		// from two branches - one enabling, one disabling - so hooking both is
-		// what tells the two apart. Offsets and the ID come from the reference
-		// implementation's source, which makes them a hypothesis until this pass
-		// says otherwise.
+		// THE FUNCTION, NOT THE CALL SITES, AND THE DIFFERENCE IS THE WHOLE
+		// POINT OF THIS VERSION.
+		//
+		// 1.12.8 and 1.13.0 redirected two call sites inside the console's
+		// handler, which is where the reference implementation puts them. That
+		// works, and it was proven working - but only for callers that go
+		// through that handler. Papyrus does not: an Actor.SetUnconscious call
+		// from a script moved the life state with the hooks installed and
+		// produced no line at all, and the report below logs unconditionally,
+		// so silence there means the call never reached us. Two entry points,
+		// one implementation.
+		//
+		// Both call sites resolved to the same address, which is the thing that
+		// makes this possible: hooking the implementation itself catches every
+		// caller - console, Papyrus, another mod, anything. The address is not
+		// borrowed from anywhere; it is read out of the displacement of a call
+		// site this project has already proven, and the first byte is checked
+		// to be a five-byte call before trusting it.
 		//
 		// NOT INSTALLED ON VR, AND THE REASON IS A TRAP WORTH WRITING DOWN.
 		// REL::RelocationID's two-argument constructor assigns the SE id to the
@@ -1035,32 +1050,47 @@ namespace Lodestone::Core::Incapacitation
 		// VR; this plugin does, so the guard is ours to add.
 		// -------------------------------------------------------------------
 
-		using SetUnconsciousFn = bool (*)(RE::Actor*, bool);
+		SafetyHookInline g_setUnconsciousHook{};
 
-		struct SetUnconsciousCallHook
+		// Reads the target of a five-byte `call rel32` (E8 cd). The
+		// displacement sits at +1 and is relative to the instruction after it.
+		// Returns 0 if the byte is not E8, because trusting a displacement read
+		// out of something that is not a call is how a wrong address gets
+		// installed quietly.
+		std::uintptr_t ResolveCallTarget(std::uintptr_t a_callSite)
 		{
-			static bool EnableThunk(RE::Actor* a_actor, bool a_enable)
+			if (*reinterpret_cast<const std::uint8_t*>(a_callSite) != 0xE8) {
+				return 0;
+			}
+
+			const auto disp = *reinterpret_cast<const std::int32_t*>(a_callSite + 1);
+			return a_callSite + 5 + disp;
+		}
+
+		struct SetUnconsciousHook
+		{
+			static bool thunk(RE::Actor* a_actor, bool a_enable)
 			{
 				// Original first, always - the same rule every other thunk in
 				// this plugin follows, and here it is also what the reference
 				// implementation does: the engine's own work has to be finished
 				// before anything is stacked on it.
-				const auto ret = reinterpret_cast<SetUnconsciousFn>(enableOriginal)(a_actor, a_enable);
-				Report("enable", a_actor, a_enable);
-				ApplyInsideHandler(a_actor, a_enable);
+				const auto ret = g_setUnconsciousHook.call<bool, RE::Actor*, bool>(a_actor, a_enable);
+
+				Report(a_enable ? "enable" : "disable", a_actor, a_enable);
+
+				// The bool decides the direction now. Hooking the two call
+				// sites used to tell enabling from disabling by WHICH site
+				// fired; hooking the function reads the argument instead, which
+				// is the same answer from a more direct source.
+				if (a_enable) {
+					ApplyInsideHandler(a_actor, a_enable);
+				} else {
+					RevertInsideHandler(a_actor);
+				}
+
 				return ret;
 			}
-
-			static bool DisableThunk(RE::Actor* a_actor, bool a_enable)
-			{
-				const auto ret = reinterpret_cast<SetUnconsciousFn>(disableOriginal)(a_actor, a_enable);
-				Report("disable", a_actor, a_enable);
-				RevertInsideHandler(a_actor);
-				return ret;
-			}
-
-			static inline std::uintptr_t enableOriginal = 0;
-			static inline std::uintptr_t disableOriginal = 0;
 
 		private:
 			// THIS IS THE POINT OF THE WHOLE EXERCISE. It runs INSIDE the
@@ -1499,40 +1529,46 @@ namespace Lodestone::Core::Incapacitation
 		}
 
 		try {
-			// First and only trampoline user in this plugin - every other hook
-			// here is a vtable swap or SafetyHook, which manage their own. Two
-			// unique destinations at 14 bytes each; 64 is room to spare. If a
-			// second module ever needs the trampoline, this call has to move
-			// somewhere both can share, because it replaces the allocation
-			// rather than adding to it.
-			SKSE::AllocTrampoline(64);
-			auto& trampoline = SKSE::GetTrampoline();
-
-			// write_call<5> and not write_branch<5>: the target is an existing
-			// `call rel32` (0xE8), not a jmp. Both primitives redirect an
-			// existing call or jump site and neither detours a function body -
-			// which is the distinction CONVENTIONS.md records, and this is the
-			// use it was always the right tool for.
-			const REL::Relocation<std::uintptr_t> enableTarget{ REL::RelocationID(21874, 22356),
+			// The call site is only used to FIND the function - nothing is
+			// written to it. Two of them were redirected in 1.12.8 and both
+			// resolved to the same address, which is what makes reading one
+			// enough.
+			const REL::Relocation<std::uintptr_t> callSite{ REL::RelocationID(21874, 22356),
 				REL::Relocate(0xC8, 0xC8) };
-			const REL::Relocation<std::uintptr_t> disableTarget{ REL::RelocationID(21874, 22356),
-				REL::Relocate(0x120, 0x120) };
+			const auto target = ResolveCallTarget(callSite.address());
 
-			SetUnconsciousCallHook::enableOriginal =
-				trampoline.write_call<5>(enableTarget.address(), SetUnconsciousCallHook::EnableThunk);
-			SetUnconsciousCallHook::disableOriginal =
-				trampoline.write_call<5>(disableTarget.address(), SetUnconsciousCallHook::DisableThunk);
+			if (!target) {
+				spdlog::error("Incapacitation: the address at 0x{:X} does not hold a five-byte call, so the "
+							  "SetUnconscious target could not be resolved - the fall is unavailable. This "
+							  "means the id or the offset no longer points where it used to.",
+					callSite.address());
+				return;
+			}
 
-			spdlog::info("Incapacitation: SetUnconscious call-site proof installed - enable @0x{:X}, "
-						 "disable @0x{:X}, originals 0x{:X} and 0x{:X}. LOG ONLY, no behaviour attached. "
-						 "Both thunks call the original and return its answer.",
-				enableTarget.address(), disableTarget.address(), SetUnconsciousCallHook::enableOriginal,
-				SetUnconsciousCallHook::disableOriginal);
+			// Inline detour of the function body, which is SafetyHook's job -
+			// the trampoline primitives redirect call and jump sites and cannot
+			// do this, which is the distinction CONVENTIONS.md records. The
+			// project already depends on SafetyHook for exactly this reason.
+			g_setUnconsciousHook = safetyhook::create_inline(
+				reinterpret_cast<void*>(target), reinterpret_cast<void*>(&SetUnconsciousHook::thunk));
+
+			if (!g_setUnconsciousHook) {
+				spdlog::error("Incapacitation: SafetyHook refused to hook the SetUnconscious target at "
+							  "0x{:X} - the fall is unavailable, knockouts otherwise unaffected.",
+					target);
+				return;
+			}
+
+			spdlog::info("Incapacitation: SetUnconscious hooked at 0x{:X}, resolved from the call site at "
+						 "0x{:X}. Every caller passes through here now - console, Papyrus and anything "
+						 "else - and nothing happens to an actor KnockoutFall did not register.",
+				target, callSite.address());
 		} catch (const std::exception& e) {
-			spdlog::error("Incapacitation: failed to install the SetUnconscious call-site proof: {}", e.what());
+			spdlog::error("Incapacitation: failed to hook SetUnconscious: {} - the fall is unavailable.",
+				e.what());
 		} catch (...) {
-			spdlog::error("Incapacitation: failed to install the SetUnconscious call-site proof "
-						  "(unknown exception).");
+			spdlog::error("Incapacitation: failed to hook SetUnconscious (unknown exception) - the fall is "
+						  "unavailable.");
 		}
 	}
 
