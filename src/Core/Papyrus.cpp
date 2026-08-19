@@ -11,6 +11,7 @@
 #include "CastTime.h"
 #include "ChannelInfo.h"
 #include "Detection.h"
+#include "DetectionRead.h"
 #include "Incapacitation.h"
 #include "MagicScaling.h"
 #include "PluginInfo.h"
@@ -36,6 +37,7 @@ namespace Lodestone::Core::Papyrus
 		ok &= SpellTomes::RegisterFuncs(a_vm);     // C.3/L2 - spell tomes
 		ok &= MagicScaling::RegisterFuncs(a_vm);   // L3 - magic scaling
 		ok &= Detection::RegisterFuncs(a_vm);      // L-A - detection scaling
+		ok &= DetectionRead::RegisterFuncs(a_vm);  // L-B1 - detection reading
 		ok &= ChannelInfo::RegisterFuncs(a_vm);    // L0 - channel diagnostics
 		ok &= Incapacitation::RegisterFuncs(a_vm); // Hook A - managed knockout
 

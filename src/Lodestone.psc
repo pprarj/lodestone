@@ -268,6 +268,38 @@ Int Function GetChannelContributorCount(String asChannel) global native
 ; index, unknown channel name, or DLL absent -> "".
 String Function GetChannelContributorPlugin(String asChannel, Int aiIndex) global native
 
+; --- Detection reading (added in DLL 1.14.0) -------------------------------
+;
+; The engine keeps a detection score for every actor that is currently paying
+; attention to another one. These functions report that score. They do NOT
+; change it: see RegisterDetectionMultiplierChannel above for the composition
+; channel, which is a separate thing and still applies to nothing on its own.
+;
+; SCALE. The value is SIGNED and zero is the boundary: negative means not yet
+; detected, zero or above means detected. The useful band observed in the wild
+; is -100 (unnoticed) to 0 (fully detected). Lodestone reports the engine's own
+; number and does NOT normalize it, because the exact width of the band is not
+; confirmed and a published signature cannot be taken back. If you want a
+; percentage, clamp it yourself.
+;
+; FRESHNESS. The value is read on the game thread and cached by the DLL; a call
+; returns the most recent reading, not a fresh computation. Before the first
+; reading lands the sentinel is returned. Do not build anything on sub-second
+; latency - this is a poll-grade reading.
+;
+; Requires Lodestone.GetVersion() >= 1014000 (1.14.0).
+
+; The highest detection level any actor currently has against akActor.
+; None actor, actor with no active AI process, or cache not yet warm -> -1
+; (which is also a legal real value: check GetDetectionObserverCount to tell
+; "nobody is looking" from "not measured yet").
+Int Function GetHighestDetectionLevel(Actor akActor) global native
+
+; How many actors currently have line of sight to akActor, from the same
+; reading as GetHighestDetectionLevel. None actor or cache not yet warm -> -1.
+; Zero is a real answer.
+Int Function GetDetectionObserverCount(Actor akActor) global native
+
 ; --- Incapacitation (added in DLL 1.10.0, usable from 1.11.0) --------------
 ;
 ; A managed non-lethal knockout: mark an actor as managed-unconscious, query
