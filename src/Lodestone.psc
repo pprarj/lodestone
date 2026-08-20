@@ -268,24 +268,39 @@ Int Function GetChannelContributorCount(String asChannel) global native
 ; index, unknown channel name, or DLL absent -> "".
 String Function GetChannelContributorPlugin(String asChannel, Int aiIndex) global native
 
-; --- Detection reading (added in DLL 1.14.0) -------------------------------
+; --- Detection reading (added in DLL 1.14.0; filtered pair added in 1.15.0) -
 ;
 ; The engine keeps a detection score for every actor that is currently paying
-; attention to another one. These functions report that score. They do NOT
-; change it: see RegisterDetectionMultiplierChannel above for the composition
-; channel, which is a separate thing and still applies to nothing on its own.
+; attention to another one. These four functions report that score, in two
+; shapes - the engine's own ready-made aggregate, and a DLL-built one that can
+; exclude observers by keyword. None of them change anything: see
+; RegisterDetectionMultiplierChannel above for the composition channel, which
+; is a separate thing and still applies to nothing on its own.
 ;
-; SCALE. The value is SIGNED and zero is the boundary: negative means not yet
-; detected, zero or above means detected. The useful band observed in the wild
-; is -100 (unnoticed) to 0 (fully detected). Lodestone reports the engine's own
-; number and does NOT normalize it, because the exact width of the band is not
-; confirmed and a published signature cannot be taken back. If you want a
-; percentage, clamp it yourself.
+; SCALE (corrected in 1.15.0 - the 1.14.0 text is kept below, struck through
+; in prose, so nobody "fixes" this back to it). The value is SIGNED and zero
+; is the boundary: negative means not yet detected, zero or above means
+; detected - that much was right. What was wrong: the 1.14.0 text described a
+; band of -100 to 0 that the number climbs through gradually. In play it
+; JUMPS instead - a floor around -1000 while nobody is paying attention, then
+; straight to roughly -20 to 0 the instant someone notices, with nothing
+; observed in between. A threshold sized at the midpoint of "-100 to 0" (a
+; consumer did exactly this, at -50) lands at roughly 95% of the way to
+; "detected", not halfway. Do not interpolate across this value - branch on
+; it instead (unnoticed / noticed, then how close to zero within the noticed
+; band).
 ;
-; FRESHNESS. The value is read on the game thread and cached by the DLL; a call
-; returns the most recent reading, not a fresh computation. Before the first
-; reading lands the sentinel is returned. Do not build anything on sub-second
-; latency - this is a poll-grade reading.
+; Lodestone reports the engine's own number and does NOT normalize it: the
+; exact width and shape of the band is still not fully confirmed - the -1000
+; floor is observed in play, not documented in any header - and a published
+; signature cannot be taken back. If you want a percentage, clamp and scale
+; it yourself, and pick your own floor deliberately rather than assuming
+; -100.
+;
+; FRESHNESS. The value is read on the game thread and cached by the DLL; a
+; call returns the most recent reading, not a fresh computation. Before the
+; first reading lands the sentinel is returned. Do not build anything on
+; sub-second latency - this is a poll-grade reading.
 ;
 ; Requires Lodestone.GetVersion() >= 1014000 (1.14.0).
 
@@ -299,6 +314,45 @@ Int Function GetHighestDetectionLevel(Actor akActor) global native
 ; reading as GetHighestDetectionLevel. None actor or cache not yet warm -> -1.
 ; Zero is a real answer.
 Int Function GetDetectionObserverCount(Actor akActor) global native
+
+; --- Filtered detection reading (added in DLL 1.15.0) ----------------------
+;
+; Same SCALE and FRESHNESS as the pair above. The difference: these two build
+; their OWN aggregate DLL-side, skipping any observer that carries
+; akExcludeType, instead of reading the engine's ready-made one. That answers
+; "is a HUMANOID watching me", excluding wildlife with a keyword like
+; ActorTypeAnimal - something the unfiltered pair cannot do, because an Int
+; has no identity attached and there is nothing on your side to filter.
+;
+; NOT PROMISED TO MATCH THE UNFILTERED PAIR, even with akExcludeType set to
+; None. This aggregate walks its own candidate set through a different engine
+; call and does not reproduce whatever internal logic the engine's own
+; aggregate uses beyond taking a maximum. Treat the two pairs as related, not
+; interchangeable.
+;
+; GetDetectionObserverCountExcluding is NOT a line-of-sight count - the
+; engine call this pair uses has no such output. It counts how many
+; keyword-filtered candidates currently DETECT akActor (level >= 0), which is
+; a different question from "how many can see" it.
+;
+; "Nobody survived the filter" reports the same floor the unfiltered pair
+; shows for "nobody is watching" (see the SCALE note above), on purpose - so
+; you do not learn a third convention on top of the sentinel and the real
+; scale.
+;
+; Requires Lodestone.GetVersion() >= 1015000 (1.15.0).
+
+; The highest detection level any actor NOT carrying akExcludeType currently
+; has against akActor. akExcludeType may be None (no exclusion applied - see
+; above for why the result can still differ from GetHighestDetectionLevel).
+; None akActor, actor with no active AI process, or cache not yet warm -> -1.
+Int Function GetHighestDetectionLevelExcluding(Actor akActor, Keyword akExcludeType) global native
+
+; How many akExcludeType-filtered candidates currently detect akActor - see
+; above for why this is a detection count, not a line-of-sight count. None
+; akActor, no active AI process, or cache not yet warm -> -1. Zero is a real
+; answer.
+Int Function GetDetectionObserverCountExcluding(Actor akActor, Keyword akExcludeType) global native
 
 ; --- Incapacitation (added in DLL 1.10.0, usable from 1.11.0) --------------
 ;
