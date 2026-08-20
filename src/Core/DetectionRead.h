@@ -30,12 +30,35 @@
 // A call right after a load, before any reading has landed, gets the
 // documented cold sentinel - see the FRESHNESS note in Lodestone.psc.
 //
-// ONE CACHE ENTRY, TWO NATIVES, NEVER DIVERGENT. Both
-// GetHighestDetectionLevel and GetDetectionObserverCount come from the same
-// engine call and the same cache entry, refreshed together. Neither one can
-// report "cold" while the other reports a real number - see ReadCache in the
-// .cpp, which both natives call. The Excluding pair below carries the same
-// guarantee, from ReadCacheFiltered, against its own separate cache.
+// ONE CACHE ENTRY, TWO NATIVES - AND THE GUARANTEE IS NARROWER THAN 1.14.0
+// AND 1.15.0 CLAIMED. Both natives of a pair read the same cache entry,
+// filled by one engine reading, through one shared function (ReadCache, or
+// ReadCacheFiltered for the Excluding pair). WITHIN a single native call the
+// level and the count therefore always come from the same reading.
+//
+// ACROSS TWO CALLS THEY DO NOT. Those two versions said "never divergent",
+// flatly, and that was wrong - the promise only ever held inside one call.
+// A consumer reads the pair as two separate natives, and the refresh those
+// calls queue runs on the game thread, so it can land BETWEEN them:
+//
+//   VM thread    GetDetectionObserverCountExcluding -> count from reading N
+//   game thread  the queued refresh completes       -> entry becomes reading N+1
+//   VM thread    GetHighestDetectionLevelExcluding  -> level from reading N+1
+//
+// and the consumer holds half of each. The pending flag does not prevent
+// this: it stops a second TASK from being queued, not the first task from
+// finishing mid-pair. Reported from play as a positive level (detected)
+// arriving next to a zero count, at the exact instant the reading flipped -
+// which is the only moment the two generations differ enough to notice.
+//
+// NOT FIXED HERE, AND THE REASON IS THAT IT CANNOT BE, INTERNALLY. This
+// module has no way to know that two native calls form one logical pair -
+// nothing in the call tells it, and inventing a boundary (a time window, a
+// latch) would guess. Closing it properly means one native that returns both
+// numbers, which is new permanent public surface and a decision for the
+// author rather than a quiet fix. Until then the contract is the honest one:
+// treat a level and a count read back to back as two samples taken close
+// together, not as one atomic reading.
 //
 // A SECOND, DLL-BUILT AGGREGATE (added in DLL 1.15.0), FOR FILTERING BY
 // KEYWORD. The two natives above read one number the engine already
@@ -43,22 +66,38 @@
 // the Int has no identity attached, so there is no candidate to filter out.
 // GetHighestDetectionLevelExcluding and GetDetectionObserverCountExcluding
 // answer that by building their OWN aggregate: walk every actor in high
-// process (ProcessLists::ForEachHighActor), skip whichever ones carry the
-// excluded keyword, and call Actor::RequestDetectionLevel - the same
-// direction confirmed for the unfiltered pair (observer->RequestDetectionLevel(target))
-// - on what is left, keeping the highest level and counting how many of the
-// SURVIVING candidates are at or above zero (the same detected/not-detected
-// boundary the level itself uses).
+// process (ProcessLists::ForEachHighActor), drop the candidates listed below,
+// and call Actor::RequestDetectionLevel - the same direction confirmed for
+// the unfiltered pair (observer->RequestDetectionLevel(target)) - on what is
+// left, keeping the highest level and counting how many of the SURVIVING
+// candidates are at or above zero (the same detected/not-detected boundary
+// the level itself uses).
 //
-// THIS AGGREGATE CAN DISAGREE WITH THE ENGINE'S OWN, EVEN WITH NO KEYWORD
-// EXCLUDED. It walks a different candidate set (high actors this module can
-// see) through a different engine call (the pairwise query, not the engine's
-// internal aggregate) and reproduces none of whatever internal logic
-// RequestHighestDetectionLevelAgainstActor uses beyond taking a maximum. A
-// consumer comparing GetHighestDetectionLevel against
-// GetHighestDetectionLevelExcluding(actor, None) and finding different
-// numbers is not necessarily looking at a bug - see the .cpp for what is and
-// is not reproduced.
+// WHAT THE WALK SKIPS, and every one of these is here because leaving it out
+// produced a wrong reading in play (1.15.1):
+//
+//   the target itself     - it does not observe itself
+//   dead actors           - a corpse stays in high process and still answers
+//                           the pairwise query with its last level
+//   kDoNotShowOnStealthMeter - the engine's own "must not move the stealth
+//                           meter" flag; counting one disagrees with the
+//                           vanilla eye the player is looking at
+//   the excluded keyword  - the caller's own filter, the reason this pair
+//                           exists at all
+//
+// The first three are not policy. They are the engine's own aggregate's
+// behavior, which this one has to reproduce by hand precisely because it does
+// not call it.
+//
+// THIS AGGREGATE CAN STILL DISAGREE WITH THE ENGINE'S OWN, EVEN WITH NO
+// KEYWORD EXCLUDED. It walks a different candidate set (high actors this
+// module can see) through a different engine call (the pairwise query, not
+// the engine's internal aggregate) and reproduces none of whatever internal
+// logic RequestHighestDetectionLevelAgainstActor uses beyond taking a
+// maximum and the skips above. A consumer comparing GetHighestDetectionLevel
+// against GetHighestDetectionLevelExcluding(actor, None) and finding
+// different numbers is not necessarily looking at a bug - see the .cpp for
+// what is and is not reproduced.
 //
 // THE OBSERVER COUNT IS NOT A LINE-OF-SIGHT COUNT HERE. The unfiltered pair
 // gets its count for free, as the LOSCount the engine's aggregate call
@@ -91,7 +130,8 @@
 //   Int Function GetHighestDetectionLevelExcluding(Actor akActor, Keyword akExcludeType) global native
 //   Int Function GetDetectionObserverCountExcluding(Actor akActor, Keyword akExcludeType) global native
 //
-// Phase L-B1 (detection reading), L-B1b (filterable reading)
+// Phase L-B1 (detection reading), L-B1b (filterable reading), L-B1b fixes
+// (dead and stealth-meter-exempt candidates, and the honest pair contract)
 
 #pragma once
 

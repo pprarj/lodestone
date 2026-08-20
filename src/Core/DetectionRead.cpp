@@ -272,16 +272,46 @@ namespace Lodestone::Core::DetectionRead
 				try {
 					RE::ProcessLists::GetSingleton()->ForEachHighActor(
 						[&](RE::Actor* a_candidate) {
-							if (a_candidate && a_candidate != target.get() &&
-								!(a_excludeKeyword && a_candidate->HasKeyword(a_excludeKeyword))) {
-								const auto candidateLevel = a_candidate->RequestDetectionLevel(
-									target.get(), RE::DETECTION_PRIORITY::kNormal);
-								if (candidateLevel > level) {
-									level = candidateLevel;
-								}
-								if (candidateLevel >= 0) {
-									++detectingCount;
-								}
+							if (!a_candidate || a_candidate == target.get()) {
+								return RE::BSContainer::ForEachResult::kContinue;
+							}
+
+							// A corpse stays in high process for a while after
+							// it dies, and asking a dead actor for a detection
+							// level answers with whatever it last had rather
+							// than with nothing. The engine's own aggregate
+							// does not report dead watchers; this one walks the
+							// actor list itself, so it has to drop them by
+							// hand. Without this the reading keeps a killed
+							// bandit's last level alive - reported from play as
+							// the consumer's stage moving on an empty room
+							// minutes after the fight was over.
+							if (a_candidate->IsDead()) {
+								return RE::BSContainer::ForEachResult::kContinue;
+							}
+
+							// The engine flags actors that must not move the
+							// stealth meter (kDoNotShowOnStealthMeter). Counting
+							// one makes this aggregate disagree with the vanilla
+							// eye the player is actually looking at, which is
+							// not a disagreement anybody can act on - reported
+							// from play as the stage reaching DETECTED while the
+							// eye never closed.
+							if (a_candidate->NotShowOnStealthMeter()) {
+								return RE::BSContainer::ForEachResult::kContinue;
+							}
+
+							if (a_excludeKeyword && a_candidate->HasKeyword(a_excludeKeyword)) {
+								return RE::BSContainer::ForEachResult::kContinue;
+							}
+
+							const auto candidateLevel = a_candidate->RequestDetectionLevel(
+								target.get(), RE::DETECTION_PRIORITY::kNormal);
+							if (candidateLevel > level) {
+								level = candidateLevel;
+							}
+							if (candidateLevel >= 0) {
+								++detectingCount;
 							}
 							return RE::BSContainer::ForEachResult::kContinue;
 						});

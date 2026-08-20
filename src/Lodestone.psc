@@ -302,6 +302,23 @@ String Function GetChannelContributorPlugin(String asChannel, Int aiIndex) globa
 ; first reading lands the sentinel is returned. Do not build anything on
 ; sub-second latency - this is a poll-grade reading.
 ;
+; THE LEVEL AND THE COUNT ARE TWO SAMPLES, NOT ONE ATOMIC READING (corrected
+; in 1.15.1). Each pair below is fed by a single reading, so within ONE call
+; the number you get is self-consistent. But you read the pair as two
+; separate calls, and the DLL's refresh runs on the game thread - it can
+; complete BETWEEN your two calls, handing you the count from one reading and
+; the level from the next.
+;
+; The visible symptom is a level at or above zero ("detected") sitting next
+; to a count of zero, which looks like a contradiction and is not: it is the
+; instant the reading flipped, caught halfway. Earlier versions of this
+; comment claimed the pair could never disagree. That was wrong, and it is
+; recorded here so nobody restores the claim.
+;
+; If your logic cannot tolerate that, branch on ONE of the two - the level
+; alone already carries the detected/not-detected boundary - rather than
+; requiring the two to agree.
+;
 ; Requires Lodestone.GetVersion() >= 1014000 (1.14.0).
 
 ; The highest detection level any actor currently has against akActor.
@@ -329,6 +346,14 @@ Int Function GetDetectionObserverCount(Actor akActor) global native
 ; call and does not reproduce whatever internal logic the engine's own
 ; aggregate uses beyond taking a maximum. Treat the two pairs as related, not
 ; interchangeable.
+;
+; BESIDES akExcludeType, THE WALK ALWAYS SKIPS three kinds of candidate, and
+; you get this whether you filter by keyword or not: akActor itself, dead
+; actors, and any actor the engine flags as not affecting the stealth meter.
+; The last two were added in 1.15.1 - before that a corpse left in the cell
+; could keep reporting the level it had when it died, and an actor the
+; vanilla stealth eye ignores could push this reading to "detected" while the
+; eye stayed open.
 ;
 ; GetDetectionObserverCountExcluding is NOT a line-of-sight count - the
 ; engine call this pair uses has no such output. It counts how many
