@@ -195,7 +195,7 @@ The plugin writes to `Documents/My Games/Skyrim Special Edition/SKSE/Lodestone.l
 
 ## Contributing
 
-Read `CONVENTIONS.md` first. It is short.
+Read `CONVENTIONS.md` first. Its top half is a core shared with the author's other C++/SKSE projects and is not edited in this repository; the `Project appendix` at the bottom is this project's own - the layer split, the log file, and the framework policy that governs the Papyrus API.
 
 The one thing worth knowing up front: this codebase documents *why*, with evidence. Hook targets, rejected alternatives and non-obvious engine behavior are explained inline, citing the trace that established them. A change that alters behavior is expected to say what it observed, not what it assumed.
 
