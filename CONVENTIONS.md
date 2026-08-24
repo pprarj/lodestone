@@ -1,51 +1,65 @@
-# Lodestone - Conventions
+# Conventions and confirmed traps - C++/SKSE projects of this tree
 
-Rules that apply to all code and documents in this project.
+Code conventions and confirmed engine traps, shared by every C++/SKSE plugin in
+`G:\Modlists\Skyrim Dev\`.
 
----
+They were born in the Lodestone as that framework's own conventions file. This
+core is the part of it that is **not** framework policy - engine traps, native
+function rules, hook mechanics, comment and text rules - carried out so that the
+sibling plugins stop paying for them one at a time.
+
+This file is cumulative: every trap listed here cost somebody a debugging
+session. Reading it first saves repeating one.
+
+**Why it exists at all.** The Lodestone documented "never reach a base class of
+`Actor` through the C++ hierarchy", with a table of the correct accessors. A
+sibling plugin in this same tree hit that exact trap anyway and paid for it from
+zero - three crashes with the same register signature, a bisection, and two
+decisions across two sessions. The file that would have prevented it already
+existed, two folders away, and nothing carried it over.
+
+## How this file is maintained
+
+**The source is `_Steward\Compartilhado\CONVENTIONS-cpp.md`.** The **core** -
+everything above the appendix - is verified by `sha256` and is **not edited in
+place**: a correction arrives by campaign, or the source starts lying and the
+copies diverge again.
+
+**The APPENDIX belongs to the project, and is edited locally.** These are two
+halves with opposite rules, and confusing them once already froze a session on
+the Papyrus side of this tree: it had a correction ready for its own appendix
+and did not apply it, having read that the whole file was untouchable.
+
+The campaign invariant is the **core**, never the whole file. Copies are expected
+to have different file-level `sha256` and the same core `sha256`. A divergent
+appendix is not a dirty target.
+
+Learned a new trap? It applies to everybody. Emit it in the closing report
+(`phase-gate` section 9) and the orchestration brings it here.
+
+**What belongs only to your project goes in the Appendix**, at the end - the only
+section that differs between copies. If you need to change anything outside the
+appendix, that is a change for everybody, and the route is a campaign.
+
+**There are two shared cores in this tree, and they do not overlap.** This one is
+C++/SKSE. `_Steward\Compartilhado\CONVENTIONS.md` is the Papyrus one. A campaign
+against one never touches the other, and they do not share an appendix marker.
 
 ## Architecture
 
-### The framework provides capability. Papyrus decides policy.
+### Pure logic and engine-bound code live in separate layers.
 
-No balance value, no design decision, no tuning number lives in this DLL. The native side exposes hooks, actor values and channels; the consumer's Papyrus decides what to do with them.
+One layer computes and can be reasoned about with the game not running; the other
+one touches the engine. The directory layout mirrors the split.
 
-Test: if changing a number here would change how a mod plays, that number is in the wrong place.
+**The layer names are the project's own** and are declared in the appendix. They
+differ across this tree, and the same word does not mean the same thing in all of
+them - so read the appendix before assuming what a folder is. In particular,
+`Core` means "pure logic" in some projects here and "never knows a consumer by
+name" in the Lodestone. Those are two different axes wearing one word.
 
-### Combining several consumers' requests is Core's job, not policy leaking in.
-
-A channel accepts N contributors and composes them: multipliers by product, offsets by sum, applied in one pass. That looks like the rule above being broken - a decision about numbers, living in the DLL - and it is the inverse of it.
-
-No consumer can see the other contributors to a channel. Only Core can. Combining them is therefore precisely the work nothing else is in a position to do, and refusing to do it does not avoid the decision: it just makes the decision "the first registrant wins and the rest are discarded", which is a balance outcome too, and a worse one, arrived at by load order.
-
-Balancing stays out. **How much** each consumer asks for - its own multiplier and offset - is its Papyrus's decision. **How several requests combine** is the Core's. Changing the composition rule would change how a mod plays, so it is a published behavior under the versioning contract, not a number anyone tunes.
-
-**A contributor's identity is derived, never asked for.** The key is `TESForm::GetFile(0)` on the multiplier global - the filename of the plugin that *created* the record, not whichever one edited it last, so a patch overriding a consumer's global does not change who the contributor is. Deriving it is what let this change ship without touching a published signature: consumers pass the same two arguments they always passed and became contributors without recompiling.
-
-`GetFile(0)` can return null, and the fallback matters more than it looks. A global handed in from Papyrus came out of a loaded plugin, so this has never been observed - but the two obvious responses to it are both worse than a synthetic key. Rejecting the registration resurrects exactly the silent failure the multi-contributor change removed. Returning an empty key makes every such global collide, so the second registrant silently overwrites the first. The fallback keys by FormID instead: registrants stay separate and keep composing, at the price of identity no longer being per-plugin. That price is what the "unusually many contributors" warning exists to make visible - a channel accumulating FormID-shaped keys is a registration loop or a bad key, not a crowded modlist.
-
-### Core never knows a consumer by name. Domain may.
-
-| Layer | Namespace | Rule |
-| ----- | --------- | ---- |
-| Core | `Lodestone::Core` | Never references a consumer, its plugin file, its forms or its concepts. If it cannot be described without naming a mod, it is not Core. |
-| Domain | `Lodestone::Modules::<Name>` | May hardcode its own consumer's plugin file. Must be gated on that file's presence and must pass through cleanly when it is absent. |
-
-A Domain module that fails to resolve its data is **inactive**, not broken. It logs the difference explicitly, because from the outside those two states are indistinguishable and unanswerable in a support thread.
-
-Directory layout mirrors the namespace. No exceptions.
-
-### The Papyrus API only grows.
-
-Signatures never change once released. A function that turns out to be wrong is deprecated and removed years later, not corrected in place. Two consumers on different versions of the same DLL is the normal case, not an edge case.
-
-### Behavior never changes silently.
-
-A version bump that changes what an existing call does is a breaking change even if the signature is identical.
-
-### The DLL version is independent of any mod version.
-
-Bump it when the native API or native behavior changes. Not when a consumer ships a Papyrus fix.
+Test: a file in the pure layer that includes an engine header is in the wrong
+layer.
 
 ---
 
@@ -77,7 +91,7 @@ So `a_actor->GetLifeState()` compiles, links, and reads a wrong address. Nothing
 
 The accessors are declared right above the members in `Actor.h` (`RUNTIME_CAST_ACCESSOR_VERSIONED`, `RUNTIME_DATA_ACCESSOR_VERSIONED_EX`) and resolve the offset from the runtime version at call time.
 
-**The symptom is a constant.** `Core/Incapacitation` shipped in 1.10.0 with the direct call, and `KnockoutActor` refused every actor in the game with the same "life state 7" - identical for a chicken at 5/5 health and a blacksmith at 131/131, across six actors, two saves and four play sessions. A value that does not vary with the actor is not a game state, it is a bad address. Four sessions went into proving that from the Papyrus side, because the DLL had no way to be asked directly; `Lodestone.GetActorLifeState` exists so the next one costs a single call.
+**The symptom is a constant.** `Core/Incapacitation` in Lodestone shipped in 1.10.0 with the direct call, and `KnockoutActor` refused every actor in the game with the same "life state 7" - identical for a chicken at 5/5 health and a blacksmith at 131/131, across six actors, two saves and four play sessions. A value that does not vary with the actor is not a game state, it is a bad address. Four sessions went into proving that from the Papyrus side, because the DLL had no way to be asked directly; `Lodestone.GetActorLifeState` exists so the next one costs a single call.
 
 Methods called *on* `Actor` itself are fine - `SetLifeState`, `EvaluatePackage`, `InterruptCast`, `StopCombat` and the rest resolve through the Address Library and take `this` as the engine expects. It is member and base-class *data* access that has to go through an accessor.
 
@@ -99,9 +113,9 @@ const auto disp   = (std::int32_t*)(a_src + N - 4);
 const auto func   = (a_src + N) + *disp;
 ```
 
-Pointed at a function prologue it reads prologue bytes as a displacement and hands back an address in no loaded module, which the thunk then calls. The failure is silent until the hooked path first runs, and then it is an access violation with no useful stack. It is a tool for redirecting an existing call site; three hooks in this project were written against it as if it detoured functions, and none of them had ever run.
+Pointed at a function prologue it reads prologue bytes as a displacement and hands back an address in no loaded module, which the thunk then calls. The failure is silent until the hooked path first runs, and then it is an access violation with no useful stack. It is a tool for redirecting an existing call site; three hooks in Lodestone were written against it as if it detoured functions, and none of them had ever run.
 
-Detouring a function body means relocating the displaced prologue, which needs a disassembler. That is why SafetyHook is a dependency.
+Detouring a function body means relocating the displaced prologue, which needs a disassembler. That is why SafetyHook is a dependency in any project that hooks a non-virtual function.
 
 ### The original runs first, and exactly once.
 
@@ -156,14 +170,104 @@ This is not style. Non-ASCII characters cause encoding failures inside the game,
 
 ## Language
 
-- **Code, comments, log messages and repository documents: English.** This is a public framework with third-party consumers; a rule nobody can read is not a rule.
-- Consumer-side documents in private repositories are not covered by this file.
+- **Code, comments and log messages: English.** Every project in this tree,
+  public or private. A log line ends up pasted into a bug report.
+- **Repository documents: pt-BR**, except in a **public** repository, where they
+  are English too - a rule nobody can read is not a rule.
+- Which repositories are public is declared in the project appendix.
 
 ---
 
 ## Logging
 
-- Log file: `Documents/My Games/Skyrim Special Edition/SKSE/Lodestone.log`, derived from the CMake `project()` name. There is one source of truth for that name and it is `CMakeLists.txt`.
-- Release builds log at `info`. Debug builds log everything. `spdlog::debug` writes nothing in a shipping build.
-- **Guard the arguments, not just the call.** spdlog skips *formatting* below the active level, but arguments are still evaluated at the call site. In a hot path, a `should_log` guard is the difference between one integer compare and a virtual call per event.
-- **Log the difference between broken and not installed.** It is the single most valuable thing a module writes.
+- Log file: `Documents/My Games/Skyrim Special Edition/SKSE/<project>.log`,
+  derived from the CMake `project()` name. There is one source of truth for that
+  name and it is `CMakeLists.txt`. The project's own log file name is declared in
+  the appendix.
+- Release builds log at `info`. Debug builds log everything. `spdlog::debug`
+  writes nothing in a shipping build.
+- **Guard the arguments, not just the call.** spdlog skips *formatting* below the
+  active level, but arguments are still evaluated at the call site. In a hot path,
+  a `should_log` guard is the difference between one integer compare and a virtual
+  call per event.
+- **Log the difference between broken and not installed.** It is the single most
+  valuable thing a module writes.
+
+---
+
+## Project appendix
+
+Everything below this line belongs to this project alone and is edited locally.
+Everything above it is the shared core - see `How this file is maintained`.
+
+### Layers
+
+| Layer | Namespace | What it is |
+| ----- | --------- | ---------- |
+| Core | `Lodestone::Core` | never references a consumer, its plugin file, its forms or its concepts |
+| Domain | `Lodestone::Modules::<Name>` | may hardcode its own consumer's plugin file |
+
+**This project's `Core` is not the same axis as the sibling plugins' `Core`.**
+Here it means "knows no consumer by name". In Dwemer Logistics and Soul Ledger
+it means "pure logic, no engine headers". Do not carry one reading into the
+other.
+
+Directory layout mirrors the namespace. No exceptions.
+
+### Repository visibility
+
+**Public** - `github.com/pprarj/lodestone`. Per the core's `Language` rule, every
+document in this repository is in English, not only the code.
+
+### Log file
+
+`Lodestone.log`.
+
+### Framework policy
+
+The six rules below were the `Architecture` section of this file until
+2026-08-24. They are this project's own - a framework with a published, versioned
+Papyrus API and third-party consumers - and they do not apply to a gameplay
+plugin. They moved here unchanged when the rest of this file became the shared
+C++/SKSE core.
+
+### The framework provides capability. Papyrus decides policy.
+
+No balance value, no design decision, no tuning number lives in this DLL. The native side exposes hooks, actor values and channels; the consumer's Papyrus decides what to do with them.
+
+Test: if changing a number here would change how a mod plays, that number is in the wrong place.
+
+### Combining several consumers' requests is Core's job, not policy leaking in.
+
+A channel accepts N contributors and composes them: multipliers by product, offsets by sum, applied in one pass. That looks like the rule above being broken - a decision about numbers, living in the DLL - and it is the inverse of it.
+
+No consumer can see the other contributors to a channel. Only Core can. Combining them is therefore precisely the work nothing else is in a position to do, and refusing to do it does not avoid the decision: it just makes the decision "the first registrant wins and the rest are discarded", which is a balance outcome too, and a worse one, arrived at by load order.
+
+Balancing stays out. **How much** each consumer asks for - its own multiplier and offset - is its Papyrus's decision. **How several requests combine** is the Core's. Changing the composition rule would change how a mod plays, so it is a published behavior under the versioning contract, not a number anyone tunes.
+
+**A contributor's identity is derived, never asked for.** The key is `TESForm::GetFile(0)` on the multiplier global - the filename of the plugin that *created* the record, not whichever one edited it last, so a patch overriding a consumer's global does not change who the contributor is. Deriving it is what let this change ship without touching a published signature: consumers pass the same two arguments they always passed and became contributors without recompiling.
+
+`GetFile(0)` can return null, and the fallback matters more than it looks. A global handed in from Papyrus came out of a loaded plugin, so this has never been observed - but the two obvious responses to it are both worse than a synthetic key. Rejecting the registration resurrects exactly the silent failure the multi-contributor change removed. Returning an empty key makes every such global collide, so the second registrant silently overwrites the first. The fallback keys by FormID instead: registrants stay separate and keep composing, at the price of identity no longer being per-plugin. That price is what the "unusually many contributors" warning exists to make visible - a channel accumulating FormID-shaped keys is a registration loop or a bad key, not a crowded modlist.
+
+### Core never knows a consumer by name. Domain may.
+
+| Layer | Namespace | Rule |
+| ----- | --------- | ---- |
+| Core | `Lodestone::Core` | Never references a consumer, its plugin file, its forms or its concepts. If it cannot be described without naming a mod, it is not Core. |
+| Domain | `Lodestone::Modules::<Name>` | May hardcode its own consumer's plugin file. Must be gated on that file's presence and must pass through cleanly when it is absent. |
+
+A Domain module that fails to resolve its data is **inactive**, not broken. It logs the difference explicitly, because from the outside those two states are indistinguishable and unanswerable in a support thread.
+
+Directory layout mirrors the namespace. No exceptions.
+
+### The Papyrus API only grows.
+
+Signatures never change once released. A function that turns out to be wrong is deprecated and removed years later, not corrected in place. Two consumers on different versions of the same DLL is the normal case, not an edge case.
+
+### Behavior never changes silently.
+
+A version bump that changes what an existing call does is a breaking change even if the signature is identical.
+
+### The DLL version is independent of any mod version.
+
+Bump it when the native API or native behavior changes. Not when a consumer ships a Papyrus fix.
