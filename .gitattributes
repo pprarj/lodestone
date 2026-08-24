@@ -1,0 +1,33 @@
+# Lodestone - line ending normalization
+#
+# Why: the authoring machine has core.autocrlf=true and this repository had no
+# .gitattributes. Measured 2026-08-24: 14 of 38 tracked files sat in CRLF in the
+# working copy, among them plugin.cpp, PCH.h, Lodestone.psc and vcpkg.json.
+#
+# This file normalizes nothing that is already committed: the index is LF
+# throughout, so "git status" stays clean after adding it. What it fixes is what
+# lands in a working copy - here, and in every clone a consumer makes.
+#
+# Nothing here reaches into extern/: a superproject's .gitattributes does not
+# apply inside a submodule.
+
+# LF text - docs, C++ sources, build configuration
+*.md              text eol=lf
+*.txt             text eol=lf
+*.json            text eol=lf
+*.h               text eol=lf
+*.cpp             text eol=lf
+*.in              text eol=lf
+LICENSE           text eol=lf
+.gitignore        text eol=lf
+.gitattributes    text eol=lf
+.gitmodules       text eol=lf
+
+# CRLF text - a tool requirement, not a preference. The Papyrus compiler reads
+# .psc; cmd.exe reads .bat.
+*.psc             text eol=crlf
+*.bat             text eol=crlf
+
+# No binary block here on purpose: this repository tracks zero binary files.
+# Git detects binary content by NUL bytes on its own, and a public config that
+# lists .bsa/.nif/.hkx would describe a project this is not.
