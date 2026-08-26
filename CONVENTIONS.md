@@ -195,6 +195,49 @@ This is not style. Non-ASCII characters cause encoding failures inside the game,
 
 ---
 
+## Internal version numbers
+
+### A version number that named a binary that ran is spent. It does not come back.
+
+When a phase bumps the internal version and the resulting DLL is installed and run
+in game, that number has named a real artifact. Measurements quoted in a handoff or
+a report refer to it. If the work is later discarded without a commit, the next
+session **continues from where the phase stopped** - it does not return to the
+number in the last commit. Reusing a spent number makes a record point at a binary
+that is not the one it measured, which destroys the only thing an internal version
+is for.
+
+### Git hands the old number back, silently, and nothing warns you.
+
+The version lives in a **tracked** file - `CMakeLists.txt`, `project(VERSION ...)`,
+which `configure_file()` turns into `Version.h` at build time. The build directory
+and the `.dll` are **gitignored**. A `git checkout` of that file therefore restores
+the committed number with no trace that the range above it was ever spent.
+
+Measured on 2026-08-26 in the Lodestone: HEAD at `1.15.1`, working tree at `1.15.7`,
+six builds installed and run in game, not one commit. A discard would have silently
+rewound six spent numbers.
+
+### The floor only exists where someone writes it.
+
+There is no counter that enforces this. Before discarding work that bumped the
+version, write the floor **outside the repository**: the project handoff **and** the
+session memory. The handoff alone is not enough - it is rewritten when the phase
+closes.
+
+### The test that decides, and it outlives this file's project type.
+
+**Does the artifact the version names go into the commit?**
+
+- **Yes** - the risk does not exist. Version and artifact travel in the same commit
+  and cannot disagree. The Papyrus projects of this tree are in this case: their
+  `.pex` and `.esp` are tracked.
+- **No** - the version can outlive its artifact's absence. Write the floor down.
+
+Apply the test, not the example. A future project type that ships something else
+entirely is covered by the question; it is not covered by a rule that only mentions
+`CMakeLists.txt`.
+
 ## Project appendix
 
 Everything below this line belongs to this project alone and is edited locally.
