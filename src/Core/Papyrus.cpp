@@ -12,6 +12,7 @@
 #include "ChannelInfo.h"
 #include "Detection.h"
 #include "DetectionRead.h"
+#include "EquipVeto.h"
 #include "Incapacitation.h"
 #include "MagicScaling.h"
 #include "PluginInfo.h"
@@ -40,6 +41,7 @@ namespace Lodestone::Core::Papyrus
 		ok &= DetectionRead::RegisterFuncs(a_vm);  // L-B1/L-B1b - detection reading
 		ok &= ChannelInfo::RegisterFuncs(a_vm);    // L0 - channel diagnostics
 		ok &= Incapacitation::RegisterFuncs(a_vm); // Hook A - managed knockout
+		ok &= EquipVeto::RegisterFuncs(a_vm);      // 1.16.0 - equip veto
 
 		if (ok) {
 			spdlog::info("Papyrus: all modules registered.");

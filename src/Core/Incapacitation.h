@@ -70,8 +70,8 @@
 // to drop it. No wake event is dispatched on death, because the actor did
 // not wake, and the corpse's pose is left to the engine.
 //
-// PERSISTENCE. The registry survives a save/reload: RegisterSerialization()
-// wires a cosave record holding the set of managed FormIDs, nothing else -
+// PERSISTENCE. The registry survives a save/reload: a cosave record holds
+// the set of managed FormIDs, nothing else -
 // no duration, the consumer's own Papyrus timer owns that and Papyrus state
 // already survives a save on its own. SetLifeState is NOT reapplied on
 // load. Worst case if the native life state does not survive a save/reload
@@ -102,9 +102,9 @@
 //   Event OnActorWoke(Actor akActor)
 //
 // This module now uses all THREE seams: RegisterFuncs(vm) plugs natives into
-// the dispatcher (Core/Papyrus.cpp) like every module, RegisterSerialization()
-// wires the SKSE cosave from plugin.cpp - a seam no other module in this
-// project uses - and Install() registers the death sink on kDataLoaded,
+// the dispatcher (Core/Papyrus.cpp) like every module, the cosave entry
+// points below are driven by Core/Serialization - a seam this module was the
+// first to need - and Install() registers the death sink on kDataLoaded,
 // alongside the modules that install engine hooks there. It is the only
 // Install() in the plugin that installs no hook.
 //
@@ -139,11 +139,29 @@ namespace Lodestone::Core::Incapacitation
 	// from the wrong end.
 	void Install();
 
-	// Wires the SKSE cosave callbacks (save/load/revert) that persist the set
-	// of managed-unconscious FormIDs across a save. Must be called exactly
-	// once, before the first save/load can happen - see plugin.cpp for the
-	// call site (SKSEPluginLoad, right after SKSE::Init).
+	// THE COSAVE ENTRY POINTS, driven by Core/Serialization.
 	//
-	// Never throws.
-	void RegisterSerialization();
+	// This module used to register them with SKSE itself. It cannot any more,
+	// and the reason is a hard constraint rather than a preference: SKSE gives
+	// a plugin ONE set of callbacks, and the load callback walks the record
+	// stream with GetNextRecordInfo - whoever calls it first consumes every
+	// record, so a second module registering its own load callback would see
+	// an empty stream. One owner dispatches by record type; that owner is
+	// Core/Serialization.
+	//
+	// What this module persists did not change: same record tag, same version,
+	// same bytes, same resolve-or-drop on load.
+	//
+	// None of the four throws.
+	void CosaveSave(SKSE::SerializationInterface* a_intfc);
+
+	// Runs on EVERY load, record present or not - "start empty" is the correct
+	// state for a fall that did not travel in the save.
+	void CosaveLoadBegin();
+
+	// Returns false when the record is not this module's, so the caller can
+	// offer it to the next module.
+	bool CosaveLoadRecord(SKSE::SerializationInterface* a_intfc, std::uint32_t a_type);
+
+	void CosaveRevert();
 }

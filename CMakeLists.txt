@@ -15,7 +15,7 @@ cmake_minimum_required(VERSION 3.21)
 # DLL version - INDEPENDENT of the mod version on Nexus.
 project(
     Lodestone
-    VERSION 1.15.1
+    VERSION 1.16.2
     LANGUAGES CXX
 )
 
@@ -104,6 +104,8 @@ add_commonlibsse_plugin(
         src/Core/Detection.cpp
         src/Core/DetectionRead.cpp
         src/Core/Incapacitation.cpp
+        src/Core/Serialization.cpp
+        src/Core/EquipVeto.cpp
 )
 
 target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_23)
@@ -141,6 +143,27 @@ endif()
 
 if(NOT DEFINED LODESTONE_OUTPUT_FOLDER)
     set(LODESTONE_OUTPUT_FOLDER "G:/Modlists/Skyrim Dev/mods/Lodestone - DEV/SKSE/Plugins")
+endif()
+
+# ---------------------------------------------------------------------------
+# Plugin configuration - deployed ONCE, then left alone.
+#
+# src/Core/EquipVeto.cpp reads Data\SKSE\Plugins\Lodestone.ini for its
+# diagnostics. A user edits that file, so copying it on every build would
+# throw those edits away, and not copying it at all would mean hand-creating a
+# file in the deploy folder - which is where the compiled artifact lives and
+# where nothing is authored.
+#
+# The guard is the whole point: the template lands only if there is nothing
+# there yet.
+# ---------------------------------------------------------------------------
+if(LODESTONE_OUTPUT_FOLDER AND NOT EXISTS "${LODESTONE_OUTPUT_FOLDER}/Lodestone.ini")
+    configure_file(
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/Lodestone.ini"
+        "${LODESTONE_OUTPUT_FOLDER}/Lodestone.ini"
+        COPYONLY
+    )
+    message(STATUS "Config template deployed: ${LODESTONE_OUTPUT_FOLDER}/Lodestone.ini")
 endif()
 
 if(LODESTONE_OUTPUT_FOLDER)

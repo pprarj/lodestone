@@ -45,10 +45,12 @@
 // RE/Skyrim.h and SKSE/SKSE.h come from PCH.h (force-included by CMake).
 #include "Core/BookFramework.h"
 #include "Core/CastTime.h"
+#include "Core/EquipVeto.h"
 #include "Core/Incapacitation.h"
 #include "Core/Log.h"
 #include "Core/MagicScaling.h"
 #include "Core/Papyrus.h"
+#include "Core/Serialization.h"
 #include "Core/SpellTomes.h"
 #include "Version.h"
 
@@ -75,6 +77,12 @@ namespace
 			// not a hook and is here only because the script event source has
 			// to exist by then. Two different requirements, same timing.
 			Lodestone::Core::Incapacitation::Install();
+
+			// EquipVeto installs an inline hook on a non-virtual target, so it
+			// does not need the vtable to exist - but it reads its configuration
+			// through TESDataHandler, which does need data loaded. Same seam,
+			// different reason from the four above.
+			Lodestone::Core::EquipVeto::Install();
 		}
 	}
 }
@@ -99,7 +107,7 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse) {
     // be wired as early as the serialization interface is available. No
     // other module in this plugin has needed this seam before Incapacitation
     // - see Incapacitation.h for what it persists and why.
-    Lodestone::Core::Incapacitation::RegisterSerialization();
+    Lodestone::Core::Serialization::Register();
 
     // NO TRAMPOLINE IS RESERVED HERE ANY MORE.
     //

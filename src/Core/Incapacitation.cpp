@@ -1482,7 +1482,17 @@ namespace Lodestone::Core::Incapacitation
 			spdlog::info("Incapacitation: saved {} managed actor(s).", count);
 		}
 
-		void LoadCallback(SKSE::SerializationInterface* a_intfc)
+		// SPLIT IN TWO, AND THE SPLIT IS FORCED BY THE COSAVE, NOT BY TASTE.
+		// SKSE gives a plugin ONE load callback, and the record stream is
+		// consumed by whoever calls GetNextRecordInfo first - two modules
+		// looping over it independently means the second one sees nothing.
+		// So the loop moved out to Core/Serialization, which owns the single
+		// callback and hands each record to whichever module claims its type.
+		//
+		// What used to be the top of LoadCallback is now LoadBegin: it runs on
+		// EVERY load, record present or not, because "start empty" is the
+		// correct state for a fall that did not travel in the save.
+		void LoadBegin()
 		{
 			std::lock_guard lock(g_registryLock);
 			g_registry.clear();
@@ -1492,22 +1502,23 @@ namespace Lodestone::Core::Incapacitation
 			// it, so starting empty is the honest state rather than a lost one.
 			g_fallen.clear();
 			RefreshFallenFlag();
+		}
 
-			std::uint32_t type = 0;
-			std::uint32_t version = 0;
-			std::uint32_t length = 0;
+		// Handles ONE record. Returns false when the record is not this
+		// module's, so the caller can offer it to the next module.
+		bool LoadOneRecord(SKSE::SerializationInterface* a_intfc, std::uint32_t a_type)
+		{
+			if (a_type != kRecordType) {
+				return false;
+			}
 
-			while (a_intfc->GetNextRecordInfo(type, version, length)) {
-				if (type != kRecordType) {
-					// Not this module's record - another module (or a future
-					// one) may share the cosave. Skip it and keep scanning.
-					continue;
-				}
+			std::lock_guard lock(g_registryLock);
 
+			{
 				std::uint32_t count = 0;
 				if (a_intfc->ReadRecordData(count) != sizeof(count)) {
 					spdlog::error("Incapacitation: failed to read the managed-actor count - load abandoned.");
-					return;
+					return true;
 				}
 
 				std::uint32_t loaded = 0;
@@ -1516,7 +1527,7 @@ namespace Lodestone::Core::Incapacitation
 					if (a_intfc->ReadRecordData(oldFormID) != sizeof(oldFormID)) {
 						spdlog::error("Incapacitation: failed to read a FormID at index {} of {} - load abandoned.",
 							i, count);
-						return;
+						return true;
 					}
 
 					RE::FormID newFormID = 0;
@@ -1532,6 +1543,8 @@ namespace Lodestone::Core::Incapacitation
 
 				spdlog::info("Incapacitation: loaded {} of {} managed actor(s) from the save.", loaded, count);
 			}
+
+			return true;
 		}
 
 		void RevertCallback(SKSE::SerializationInterface*)
@@ -1690,20 +1703,29 @@ namespace Lodestone::Core::Incapacitation
 		}
 	}
 
-	void RegisterSerialization()
+	// THE THREE COSAVE ENTRY POINTS. This module no longer registers them with
+	// SKSE itself - Core/Serialization does, once, for the whole plugin. See
+	// the note at LoadBegin for why that is a requirement and not a tidy-up.
+	//
+	// Nothing about what this module PERSISTS changed. Same record tag, same
+	// version, same bytes, same resolve-or-drop on load.
+	void CosaveSave(SKSE::SerializationInterface* a_intfc)
 	{
-		auto* intfc = SKSE::GetSerializationInterface();
-		if (!intfc) {
-			spdlog::error("Incapacitation: no serialization interface - managed knockout state will not "
-						  "survive a save/reload this session.");
-			return;
-		}
+		SaveCallback(a_intfc);
+	}
 
-		intfc->SetUniqueID(kSerializationID);
-		intfc->SetSaveCallback(SaveCallback);
-		intfc->SetLoadCallback(LoadCallback);
-		intfc->SetRevertCallback(RevertCallback);
+	void CosaveLoadBegin()
+	{
+		LoadBegin();
+	}
 
-		spdlog::info("Incapacitation: cosave registered (id 'LDST', record 'INC1').");
+	bool CosaveLoadRecord(SKSE::SerializationInterface* a_intfc, std::uint32_t a_type)
+	{
+		return LoadOneRecord(a_intfc, a_type);
+	}
+
+	void CosaveRevert()
+	{
+		RevertCallback(nullptr);
 	}
 }

@@ -591,3 +591,113 @@ Bool Function UnregisterForActorWokeAlias(Alias akAlias) global native
 ;   Event OnActorWoke(Actor akActor)
 ;       ; your handler
 ;   EndEvent
+
+;==============================================================
+; EQUIP VETO - since 1.16.0
+;==============================================================
+;
+; Refuses an item on an actor at the point where the game equips it, and
+; puts a replacement on instead. No equip means no unequip, no reactive
+; loop, and no window in which the actor is wearing something it should
+; not.
+;
+; You decide WHICH items. Lodestone only performs the refusal and the swap.
+;
+; Gate on GetVersion() >= 1016000.
+;
+; NOT AVAILABLE IN VR. The hook is not installed on a VR runtime and the
+; log says so plainly. These functions still exist there and still register
+; blocks, and nothing is refused. Check the log, not the return value: a
+; successful BlockEquip on VR means the block was recorded, not enforced.
+;
+; --------------------------------------------------------------------
+; THREE THINGS THAT DECIDE WHETHER THIS WORKS FOR YOU
+; --------------------------------------------------------------------
+;
+; 1. THE SUBSTITUTE IS NOT OPTIONAL IN PRACTICE.
+;
+; Passing None as akSubstitute is legal and refuses cleanly. It is also,
+; almost always, not what you want - and this was measured rather than
+; guessed.
+;
+; The game's own equip call returns nothing, so a refusal is SILENT. An
+; NPC's AI picks the best item it OWNS before trying to equip anything, is
+; never told the attempt failed, and goes on picking the same blocked item
+; on every pass. With no substitute the actor keeps whatever its base
+; outfit put on and NEVER upgrades to the allowed piece it already carries.
+;
+; Measured on a follower: given a blocked helmet, he stopped equipping the
+; allowed one he owned, for the rest of the session.
+;
+; 2. THE SUBSTITUTE GOES STALE, AND KEEPING IT CURRENT IS YOURS.
+;
+; It answers "what should this actor wear instead, right now". When the
+; right answer changes - the actor got stronger, better gear arrived, the
+; substitute left the inventory - call BlockEquip again for the same pair
+; with the new one. It overwrites.
+;
+; Measured: a follower kept wearing an iron helmet after he could have worn
+; steel, because the substitute still said iron.
+;
+; 3. akOwner IS WHAT LETS A BLOCK EXPIRE, AND IT IS REQUIRED.
+;
+; Blocks survive a save. That is deliberate: for roughly 15 seconds after
+; every load you cannot register anything, because your scripts are not
+; running yet - and a cell load is exactly when the game runs its equip
+; passes. Persisted blocks cover that gap.
+;
+; Persisting alone would be dangerous: a block left behind by an
+; uninstalled mod would stop a player equipping an item forever, with no
+; clue as to why. So every block names a Form YOUR OWN plugin defines. On
+; load the game maps saved forms onto the current load order, and a form
+; whose plugin is gone does not map - so an uninstalled mod's blocks die
+; during the load, while yours are live before your scripts wake up.
+;
+; Any Form you define works: a quest, a global, a keyword. It is identity,
+; not data - nothing is read from it. None is refused.
+;
+; DO NOT pass a vanilla form. A form from Skyrim.esm or another base-game
+; master never stops resolving, so a block owned by one can never expire -
+; the exact failure this argument prevents. Lodestone warns in the log and
+; registers it anyway. The test is: is the Form DEFINED by your plugin, or
+; only REFERENCED by it?
+;
+; Re-registering after a load is still worth doing. It is a correction
+; rather than a restoration: the world moved while the save sat on disk.
+;
+; --------------------------------------------------------------------
+; COST
+; --------------------------------------------------------------------
+;
+; With no block registered anywhere, the cost is one atomic read per equip
+; and nothing else. With blocks registered it is a hash lookup.
+;
+; The game equips an actor's whole loadout in one pass - measured at 5 to 7
+; calls in the same millisecond, and 58 calls in 7 ms across a cell load
+; with every NPC in the area dressing itself. A blocked item can be
+; attempted several times per pass rather than once; four was measured.
+
+; Blocks akItem on akActor, names what to equip instead, and names who is
+; asking.
+;
+; Returns False if akActor, akItem or akOwner is None, if akItem is not
+; something that can be worn, or if akSubstitute was given and is not
+; either. Calling it again for the same pair replaces the substitute and
+; the owner.
+Bool Function BlockEquip(Actor akActor, Form akItem, Form akSubstitute, Form akOwner) global native
+
+; Removes one block. Returns False if there was none, or if either argument
+; is None.
+Bool Function UnblockEquip(Actor akActor, Form akItem) global native
+
+; Drops every block held for one actor. Returns how many were removed, or
+; -1 if akActor is None.
+Int Function ClearEquipBlocks(Actor akActor) global native
+
+; Whether a block is held for the pair. Returns False for None arguments.
+Bool Function IsEquipBlocked(Actor akActor, Form akItem) global native
+
+; How many blocks are held, across every actor. Diagnostic: a consumer that
+; expects a bounded number can watch this and notice a registration loop.
+; Returns -1 on failure.
+Int Function GetEquipBlockCount() global native
