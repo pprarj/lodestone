@@ -701,3 +701,129 @@ Bool Function IsEquipBlocked(Actor akActor, Form akItem) global native
 ; expects a bounded number can watch this and notice a registration loop.
 ; Returns -1 on failure.
 Int Function GetEquipBlockCount() global native
+
+;==============================================================
+; PRISMA UI BRIDGE (added in DLL 1.17.0)
+;==============================================================
+;
+; Papyrus access to the Prisma UI framework, which has no Papyrus surface of its
+; own: no .psc, no .pex, no .esp, and no native on its DLL. Without this bridge a
+; Papyrus-only mod cannot reach it at all, and cannot even ask whether it is
+; installed.
+;
+; PRISMA UI IS OPTIONAL AND IS NOT A DEPENDENCY OF LODESTONE. With it absent
+; every function here returns its sentinel and nothing else changes. Nothing
+; inside Lodestone consumes this - it is exposed, never depended on.
+;
+; THERE IS NO FOCUS SURFACE, AND THAT IS DELIBERATE. Focus, Unfocus and
+; HasAnyActiveFocus are not exposed. Prisma's focus menu is a single modal menu
+; with no focus stack: unfocusing one view closes it for every view, so with two
+; Prisma panels on screen the other one's cursor is stranded. That was measured
+; in game across all four configurations, with no mitigation found, and reported
+; to the framework's author without answer. A panel that never takes focus never
+; meets any of it. If you need real keyboard or mouse input, this bridge is not
+; enough yet - say so and it becomes its own piece of work, defect included.
+;
+; VIEWS ARE NAMED BY YOU, NOT BY A HANDLE. Prisma identifies a view with a 64-bit
+; value and the Papyrus Int is 32 bits, so handing it back would corrupt it. You
+; pass a string id you chose ("StrengthMatters"), and Lodestone keeps the map.
+;
+; NOTHING HERE SURVIVES A SAVE. After a load, no view exists. Recreate it the
+; same way you recreate book text - the state is in your script, not in the DLL.
+;
+; A MUTATING CALL REPORTS THAT IT WAS ACCEPTED, NOT THAT IT FINISHED. Every call
+; into Prisma is handed to the game's main thread, because Papyrus does not run
+; there and the renderer does not belong to the Papyrus thread. True means the
+; request was queued and its arguments were valid.
+;
+; THE ORDER THAT WORKS:
+;   1. PrismaAvailable()               - if False, offer no panel and stop
+;   2. PrismaCreateView(id, path)      - returns immediately, view not ready yet
+;   3. wait for the mod event LodestonePrismaViewReady (strArg = your view id),
+;      or poll PrismaIsViewReady(id)
+;   4. PrismaCall(...)                 - only now is it delivered
+;
+; Gate on GetVersion() >= 1017000.
+
+; Whether Prisma UI is installed and answered.
+;
+; A probe, not a failure: False is the expected answer on most load orders and
+; writes nothing to the log. Cannot fail.
+Bool Function PrismaAvailable() global native
+
+; Asks Prisma to build a view, registered under asViewId - any string you pick,
+; scoped to your mod by you (nothing namespaces it for you; prefer your mod's
+; name).
+;
+; asHtmlPath is relative to Data\PrismaUI\views, the framework's own convention.
+; "MyMod/index.html" loads Data\PrismaUI\views\MyMod\index.html.
+;
+; Returns True when the request was accepted - NOT when the panel is on screen.
+; Wait for LodestonePrismaViewReady, or poll PrismaIsViewReady, before calling
+; PrismaCall.
+;
+; Idempotent: calling it again with the same id returns True and creates nothing.
+;
+; Returns False if Prisma UI is absent, or if either argument is empty.
+Bool Function PrismaCreateView(String asViewId, String asHtmlPath) global native
+
+; Whether the view exists and its page has finished loading.
+;
+; Returns False for an unknown id, which is deliberately the same answer as "not
+; ready yet" - both mean PrismaCall would do nothing.
+Bool Function PrismaIsViewReady(String asViewId) global native
+
+; Calls the JavaScript function asFunction on the view, handing it asJson as its
+; single argument. In the page, that is the global function of that name:
+; asFunction "MyUpdate" arrives at window.MyUpdate(asJson).
+;
+; The payload is a plain string as far as the DLL is concerned - JSON is a
+; convention between your script and your page, not something checked here.
+;
+; Returns True when the request was accepted. Returns False for an unknown id, an
+; empty function name, and for a view whose page is not ready - Prisma drops
+; those calls, so reporting success would be a lie.
+Bool Function PrismaCall(String asViewId, String asFunction, String asJson) global native
+
+; Makes the view visible. Returns True when the request was accepted, False for
+; an unknown id or a view that has not been built yet.
+Bool Function PrismaShow(String asViewId) global native
+
+; Hides the view without destroying it. Returns True when the request was
+; accepted, False for an unknown id or a view that has not been built yet.
+Bool Function PrismaHide(String asViewId) global native
+
+; Whether the view is hidden.
+;
+; This reports the last visibility Lodestone applied, not an answer read back
+; from Prisma. It is exact for every Show and Hide you issued.
+;
+; Returns False for an unknown id - the same answer as "visible". Ask
+; PrismaIsViewReady first if you need to tell those apart.
+Bool Function PrismaIsHidden(String asViewId) global native
+
+; Destroys the view and frees the id, along with every listener registered
+; against it. Returns True when the request was accepted, False for an unknown
+; id.
+Bool Function PrismaDestroy(String asViewId) global native
+
+; Routes a call made BY the page back to Papyrus as a mod event.
+;
+; asJsFunction is a name Prisma injects into the page as a global function. When
+; the page calls it, Lodestone sends the mod event asModEvent, with whatever the
+; page passed as strArg and 0.0 as numArg. Receive it with RegisterForModEvent
+; like any other mod event.
+;
+; The event always arrives on the game thread, never on the thread the page's
+; callback ran on. That indirection is the point: dispatching a mod event from
+; inside the framework's callback thread is the mistake this prevents.
+;
+; Registering the same view and mod event again reuses its slot rather than
+; taking a second one, so re-registering after a load is safe.
+;
+; There are 32 listener slots across every view and every mod. Running out is
+; logged as an error and returns False.
+;
+; Returns False if Prisma UI is absent, for an unknown or not-yet-built view, for
+; an empty name, or when the slots are full.
+Bool Function PrismaRegisterListener(String asViewId, String asJsFunction, String asModEvent) global native

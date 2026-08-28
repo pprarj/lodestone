@@ -18,6 +18,7 @@
 *.ini             text eol=lf
 *.h               text eol=lf
 *.cpp             text eol=lf
+*.html            text eol=lf
 *.in              text eol=lf
 LICENSE           text eol=lf
 .gitignore        text eol=lf

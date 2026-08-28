@@ -50,6 +50,7 @@
 #include "Core/Log.h"
 #include "Core/MagicScaling.h"
 #include "Core/Papyrus.h"
+#include "Core/PrismaBridge.h"
 #include "Core/Serialization.h"
 #include "Core/SpellTomes.h"
 #include "Version.h"
@@ -63,6 +64,19 @@ namespace
 	{
 		if (!a_msg) {
 			return;
+		}
+
+		// kPostLoad, and it has to be this seam rather than kDataLoaded.
+		//
+		// Prisma UI's own header recommends requesting the API at or after
+		// kPostLoad, which is when its DLL is guaranteed loaded. Nothing is
+		// created here: at kPostLoad the D3D device and the Ultralight renderer
+		// do not exist yet, and CreateView at that moment queues forever or
+		// blocks the load chain. Only the pointer is taken - views are built
+		// when a consumer asks, which is necessarily later. See
+		// Core/PrismaBridge.h.
+		if (a_msg->type == SKSE::MessagingInterface::kPostLoad) {
+			Lodestone::Core::PrismaBridge::Acquire();
 		}
 
 		if (a_msg->type == SKSE::MessagingInterface::kDataLoaded) {

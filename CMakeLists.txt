@@ -15,7 +15,7 @@ cmake_minimum_required(VERSION 3.21)
 # DLL version - INDEPENDENT of the mod version on Nexus.
 project(
     Lodestone
-    VERSION 1.16.2
+    VERSION 1.17.0
     LANGUAGES CXX
 )
 
@@ -105,6 +105,7 @@ add_commonlibsse_plugin(
         src/Core/DetectionRead.cpp
         src/Core/Incapacitation.cpp
         src/Core/Serialization.cpp
+        src/Core/PrismaBridge.cpp
         src/Core/EquipVeto.cpp
 )
 
@@ -112,9 +113,11 @@ target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_23)
 
 target_link_libraries(${PROJECT_NAME} PRIVATE safetyhook::safetyhook)
 
-# Where the generated Version.h is found by #include "Version.h".
+# Where the generated Version.h is found by #include "Version.h", and where the
+# vendored PrismaUI API header is found by #include "PrismaUI_API.h".
 target_include_directories(${PROJECT_NAME} PRIVATE
     "${CMAKE_CURRENT_BINARY_DIR}/generated"
+    "${CMAKE_CURRENT_SOURCE_DIR}/extern/prismaui-api"
 )
 
 # PCH.h is mandatory for CommonLibSSE-NG. Force-included in every file of the

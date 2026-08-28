@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Lodestone Prisma example</title>
+<!--
+  Lodestone - minimal Prisma UI view.
+
+  A starting point for a consumer, not a component to ship as-is. Copy the
+  folder to Data\PrismaUI\views\<YourModName>\ and rename what is marked below.
+
+  WHAT THIS DEMONSTRATES, and it is the whole surface:
+
+    Papyrus -> page    Lodestone.PrismaCall(viewId, "LodestoneExampleUpdate", json)
+                       lands on window.LodestoneExampleUpdate(json) below.
+
+    page -> Papyrus    Lodestone.PrismaRegisterListener(viewId, "LodestoneExampleClose",
+                       "MyModPrismaClose") makes Prisma inject a function at
+                       window.LodestoneExampleClose. Calling it sends the mod event
+                       "MyModPrismaClose", with the argument as strArg.
+
+  BOTH DIRECTIONS ARE GLOBALS ON window, and which side defines the function is
+  what tells them apart: the page defines the ones it receives on, and Prisma
+  injects the ones it sends on. An injected function does not exist until the
+  matching PrismaRegisterListener call has run, which is why send() below checks
+  before calling instead of assuming.
+
+  NOTHING HERE TAKES FOCUS. This view never asks for keyboard or mouse focus, so
+  there is no button that expects a click - the demonstration button is driven by
+  the page itself. Lodestone deliberately exposes no focus surface; see
+  Core/PrismaBridge.h for the defect that decision avoids. A view that needs real
+  input is a different problem and is not solved by this file.
+
+  No frameworks and no external assets on purpose: Ultralight is not Chromium,
+  and every dependency is another thing that renders differently in game than it
+  did in a browser.
+-->
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: transparent;
+    overflow: hidden;
+  }
+
+  /* Nothing in the page is clickable or selectable. With no focus, stray
+     selection is the only thing the pointer could do here, and it looks like a
+     bug when it happens. */
+  body {
+    font-family: Georgia, "Times New Roman", serif;
+    color: #e8e2d0;
+    user-select: none;
+    cursor: default;
+  }
+
+  #panel {
+    position: absolute;
+    top: 40px;
+    right: 40px;
+    min-width: 200px;
+    padding: 12px 16px;
+    background: rgba(12, 12, 14, 0.72);
+    border: 1px solid rgba(200, 180, 130, 0.35);
+    border-radius: 3px;
+    /* Hidden until the first update arrives. An empty frame on screen before
+       Papyrus has said anything reads as a broken mod. */
+    opacity: 0;
+    transition: opacity 180ms ease-out;
+  }
+
+  #panel.ready {
+    opacity: 1;
+  }
+
+  #label {
+    font-size: 13px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: rgba(200, 180, 130, 0.75);
+  }
+
+  #value {
+    font-size: 26px;
+    line-height: 1.2;
+    margin-top: 2px;
+  }
+</style>
+</head>
+<body>
+
+<div id="panel">
+  <div id="label">Lodestone</div>
+  <div id="value">--</div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var panel = document.getElementById("panel");
+  var label = document.getElementById("label");
+  var value = document.getElementById("value");
+
+  // Sends to Papyrus through a function Prisma injected.
+  //
+  // Returns false when the name has not been registered from the Papyrus side
+  // yet. That is a normal state during startup, not an error: the page can load
+  // before the consumer's script has called PrismaRegisterListener.
+  function send(name, arg) {
+    var fn = window[name];
+    if (typeof fn === "function") {
+      fn(arg === undefined || arg === null ? "" : String(arg));
+      return true;
+    }
+    return false;
+  }
+
+  // --- Received from Papyrus ---------------------------------------------
+  //
+  // RENAME THIS for your own mod, and pass the new name as the second argument
+  // to Lodestone.PrismaCall. The name is the contract between the two sides and
+  // nothing validates it: a typo is a call that silently does nothing.
+  window.LodestoneExampleUpdate = function (argJson) {
+    var data;
+
+    // Papyrus has no JSON encoder of its own, so whatever a consumer sends is
+    // hand-built and worth guarding. A parse error here is a bug in the sender
+    // and has to be visible somewhere, or it looks like the panel froze.
+    try {
+      data = JSON.parse(argJson);
+    } catch (err) {
+      send("LodestoneExampleLog", "bad payload: " + err.message);
+      return;
+    }
+
+    if (data.label !== undefined) {
+      label.textContent = String(data.label);
+    }
+    if (data.value !== undefined) {
+      value.textContent = String(data.value);
+    }
+
+    panel.className = "ready";
+  };
+
+  // Anything the page throws goes back to the consumer as a mod event, if it
+  // registered a listener for it. Without this an error in the view is invisible
+  // from the game side - the panel simply stops updating.
+  window.onerror = function (message, source, line) {
+    send("LodestoneExampleLog", "js-error: " + message + " at " + line);
+    return false;
+  };
+
+  // Tells the consumer the page is alive. This is the page's own signal and is
+  // NOT the same thing as the LodestonePrismaViewReady mod event, which
+  // Lodestone sends from the DOM-ready callback whether or not a page does
+  // anything. Use the Lodestone one to know when PrismaCall will be delivered;
+  // use one like this only if your page has its own setup to finish first.
+  send("LodestoneExampleReady", "");
+}());
+</script>
+
+</body>
+</html>
