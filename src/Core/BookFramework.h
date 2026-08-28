@@ -35,11 +35,17 @@
 //   text). That passthrough is the same silent-degradation property CastTime has:
 //   "no text set" is indistinguishable from "plugin not installed".
 //
-//   NOTE (pending in-game validation): the hook target is the game function behind
-//   BookMenu::OpenBookMenu. CommonLibSSE-NG 3.5.3 exposes no address-library ID for
-//   it in the shipped headers, so the ID is taken from the CommonLibSSE-NG source
-//   (RELOCATION_ID(50122, 51053)) and must be confirmed in game before this is
-//   trusted. See BookFramework.cpp.
+//   HOOK TARGET (VALIDATED IN GAME): the function CommonLibSSE-NG names
+//   BookMenu::OpenMenu_Impl, RELOCATION_ID(50122, 51053). The ID is not in the
+//   shipped headers - it was taken from the CommonLibSSE-NG source and confirmed
+//   by a log-only pass that settled the address and the eight-argument signature
+//   together. See BookFramework.cpp for that capture.
+//
+//   Do NOT go looking for BookMenu::OpenBookMenu. It is declared in
+//   RE/B/BookMenu.h but has no implementation anywhere in the vendored
+//   CommonLibSSE-NG - BookMenu.cpp implements OpenMenuFromReference,
+//   OpenMenuFromBaseForm and OpenMenu_Impl, and not it. It is a dead symbol, and
+//   starting from the header name leads to a function that does not exist.
 //
 // PERSISTENCE (v1): the stored text lives in memory for the session only - it is
 //   NOT serialized into the save. A consumer re-establishes a book's text after

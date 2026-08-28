@@ -88,6 +88,34 @@ Bool Function RegisterCastTimeChannel(GlobalVariable akMultiplier, GlobalVariabl
 ; the same runtime model the cast time channel uses. Set it before the book is
 ; opened for the new text to show. A book with no stored text opens unchanged
 ; (vanilla text). Book text over 64 KB is truncated - the engine's own limit.
+;
+; MARKUP. What you store is book markup - the same the Creation Kit puts in a
+; book's own text - and the engine treats injected text the same way it treats a
+; record's. Measured in game on injected text:
+;
+;   <p align="center"> / <p align="left">    aligns the paragraph
+;   <font face="$HandwrittenFont">           changes the face, and returns
+;   [pagebreak]                              forces a new page
+;
+; [pagebreak] NEEDS A REAL LINE BREAK ON EACH SIDE, alone on its own line. That
+; is the same authoring rule a normal book follows, and it is not this plugin's
+; addition. Glued to the end of a sentence or to the start of a tag it is not a
+; page break at all - it prints as eleven literal characters.
+;
+; AND THE TRAP IS IN PAPYRUS, NOT IN THE BOOK. Concatenation produces no line
+; break. This LOOKS like it obeys the rule above and does not:
+;
+;   t += "[pagebreak]"
+;
+; The token sits alone in its own statement, but the pieces join into one running
+; line and it ends up glued between a full stop and a tag. Put the breaks inside
+; the string:
+;
+;   t += "\n[pagebreak]\n"
+;
+; A readable source is not a formatted string. If a page break does not happen,
+; read the text back with GetBookText and look for the line break there before
+; suspecting anything else - check the string, not the source that built it.
 
 ; Replaces the stored text for akBook.
 ; Returns True on success, False on a None book (or the VM default False if the
