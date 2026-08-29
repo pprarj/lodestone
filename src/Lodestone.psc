@@ -611,7 +611,7 @@ Bool Function UnregisterForActorWokeAlias(Alias akAlias) global native
 ; successful BlockEquip on VR means the block was recorded, not enforced.
 ;
 ; --------------------------------------------------------------------
-; THREE THINGS THAT DECIDE WHETHER THIS WORKS FOR YOU
+; FOUR THINGS THAT DECIDE WHETHER THIS WORKS FOR YOU
 ; --------------------------------------------------------------------
 ;
 ; 1. THE SUBSTITUTE IS NOT OPTIONAL IN PRACTICE.
@@ -665,6 +665,32 @@ Bool Function UnregisterForActorWokeAlias(Alias akAlias) global native
 ; Re-registering after a load is still worth doing. It is a correction
 ; rather than a restoration: the world moved while the save sat on disk.
 ;
+; 4. THE SUBSTITUTE MUST FIT THE LOADOUT, AND ONLY YOU CAN JUDGE THAT.
+;
+; The substitute is equipped on EVERY refusal of that item. Lodestone
+; does not ask whether it fits what the actor is equipping at that
+; instant, and it cannot: it sees one call, not the loadout the AI is
+; assembling around it.
+;
+; So a substitute that occupies a slot can contradict the very pass it
+; lands in. Measured, and it cost a consumer project a day of hunting:
+; a blocked SHIELD with a shield substitute. Every time the actor's AI
+; reached for a TWO-HANDED weapon, the refusal put a shield back in the
+; off hand - a loadout that cannot exist. The follower drew, failed,
+; and drew again, and never attacked. Nothing in the log looked wrong,
+; because from inside the hook nothing WAS wrong: each refusal and each
+; substitution did exactly what it was told.
+;
+; The rule that falls out of it: a substitute is safe when it can
+; coexist with anything else the actor might legitimately equip. A
+; same-slot downgrade of a WORN piece is the easy case - iron helmet
+; for ebony helmet - because the slot is occupied either way. Hands and
+; off hand are the hard case, because two-handed weapons claim both.
+;
+; If a blocked item has no substitute that satisfies that, pass None and
+; refuse plainly, or keep the item out of the actor's inventory instead
+; - a choice never taken needs no refusing.
+;
 ; --------------------------------------------------------------------
 ; COST
 ; --------------------------------------------------------------------
@@ -676,6 +702,13 @@ Bool Function UnregisterForActorWokeAlias(Alias akAlias) global native
 ; calls in the same millisecond, and 58 calls in 7 ms across a cell load
 ; with every NPC in the area dressing itself. A blocked item can be
 ; attempted several times per pass rather than once; four was measured.
+;
+; A substitute ALREADY ON THE ACTOR is not put on again - since 1.17.2.
+; The AI never learns that an item was refused, so it re-picks the
+; blocked one on every pass; without this, each pass put the substitute
+; on afresh. On a weapon that restarts the draw animation, and on armor
+; it runs unseen - one helmet was measured being re-equipped seven times
+; inside 350 ms. The refusal is unaffected either way.
 
 ; Blocks akItem on akActor, names what to equip instead, and names who is
 ; asking.

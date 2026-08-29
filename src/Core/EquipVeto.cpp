@@ -83,6 +83,7 @@ namespace Lodestone::Core::EquipVeto
 		std::atomic<std::uint64_t> g_watched{ 0 };
 		std::atomic<std::uint64_t> g_refusals{ 0 };
 		std::atomic<std::uint64_t> g_substitutions{ 0 };
+		std::atomic<std::uint64_t> g_redundantSwapsAvoided{ 0 };
 		std::atomic<std::int64_t>  g_lastSummaryMs{ 0 };
 
 		// Only touched by whichever thread wins the summary exchange.
@@ -377,7 +378,7 @@ namespace Lodestone::Core::EquipVeto
 		// Answers, from the engine's own inventory, whether the item just
 		// refused is nevertheless being reported as worn. Not free, and it runs
 		// inside the hook, so it fires only on the first refusal of a pair and
-		// then every hundredth.
+		// then every twenty-fifth.
 		void LogWornState(RE::Actor* a_actor, RE::TESBoundObject* a_item, std::uint64_t a_count)
 		{
 			try {
@@ -403,6 +404,56 @@ namespace Lodestone::Core::EquipVeto
 			}
 		}
 
+		// Answers whether an item is ALREADY on the actor's body. A substitution
+		// aimed at something already worn is a redundant equip, and redundant
+		// equips are what turned this module into a visible defect.
+		//
+		// WHAT GOES WRONG WITHOUT IT: the refusal is mute - the AI cannot see a
+		// veto, so it re-picks the forbidden item and asks again, and again. Every
+		// ask used to put the substitute on again. On a weapon that restarts the
+		// draw animation, so the follower sheathes and draws and never attacks -
+		// measured at 3.1 calls/s across 75 seconds, 16 of them one single pair.
+		// On armor the same loop runs unseen, because armor has no animation to
+		// restart: a consumer log from the day before shows one helmet substituted
+		// seven times inside 350 ms and nobody noticed.
+		//
+		// THIS DOES NOT STOP THE LOOP, and nothing on this path can. The AI keeps
+		// asking at the same rate; what stops is putting the item on each time.
+		// Convergence has to come from what the AI can CHOOSE - the consumer
+		// keeping the forbidden item out of reach - not from the equip path.
+		//
+		// Two primitives, because the engine keeps the two kinds of worn item in
+		// different places:
+		//   - armor -> GetWornArmor(formID), which walks the inventory
+		//   - anything else -> the two hands, which is a pointer read
+		//
+		// Either hand counts. The substitution passes slot=nullptr, so it never
+		// targets a hand in the first place - if the item is in one of them,
+		// equipping it again buys nothing.
+		//
+		// FAILING OPEN IS THE SAFE SIDE. Any doubt returns false, which equips the
+		// substitute exactly as it did before this guard existed.
+		bool IsAlreadyOnTheBody(RE::Actor* a_actor, RE::TESBoundObject* a_item)
+		{
+			if (!a_actor || !a_item) {
+				return false;
+			}
+
+			try {
+				if (a_item->IsArmor()) {
+					// noInit: this runs inside the hook, and forcing an
+					// uninitialised inventory to load here is not this module's
+					// call to make.
+					return a_actor->GetWornArmor(a_item->GetFormID(), true) != nullptr;
+				}
+
+				return a_actor->GetEquippedObject(false) == a_item ||
+				       a_actor->GetEquippedObject(true) == a_item;
+			} catch (...) {
+				return false;
+			}
+		}
+
 		// RESETS THE DIAGNOSTIC COUNTERS, and this exists because their survival
 		// across a load hid the one thing a production-style run was there to
 		// show. Carried across a load, a pair already at 50 refusals and a
@@ -423,6 +474,7 @@ namespace Lodestone::Core::EquipVeto
 			}
 
 			g_substitutions.store(0, std::memory_order_relaxed);
+			g_redundantSwapsAvoided.store(0, std::memory_order_relaxed);
 
 			spdlog::info("EquipVeto: refusal and substitution counters reset ({}). The numbering below "
 						 "restarts at #1 - it is not a new session.",
@@ -691,7 +743,28 @@ namespace Lodestone::Core::EquipVeto
 						auto* replacement = g_pendingSubstitute;
 						g_pendingSubstitute = nullptr;
 
-						if (replacement) {
+						// THE GUARD. Putting on what is already on restarts the
+						// animation and buys nothing - see IsAlreadyOnTheBody. The
+						// refusal above still stands either way: the blocked item
+						// does not go on.
+						if (replacement && IsAlreadyOnTheBody(a_actor, replacement)) {
+							const auto avoided =
+								g_redundantSwapsAvoided.fetch_add(1, std::memory_order_relaxed) + 1;
+
+							if (avoided <= 25 || avoided % 25 == 0) {
+								spdlog::info("EquipVeto: [ALREADY WORN #{}] actor [0x{:08X}] \"{}\" - "
+											 "[0x{:08X}] \"{}\" refused, and [0x{:08X}] \"{}\" is "
+											 "already on. Nothing equipped.",
+									avoided, a_actor ? a_actor->GetFormID() : 0,
+									(a_actor && a_actor->GetDisplayFullName())
+										? a_actor->GetDisplayFullName()
+										: "",
+									a_object->GetFormID(),
+									a_object->GetName() ? a_object->GetName() : "",
+									replacement->GetFormID(),
+									replacement->GetName() ? replacement->GetName() : "");
+							}
+						} else if (replacement) {
 							const auto swaps = g_substitutions.fetch_add(1, std::memory_order_relaxed) + 1;
 
 							if (swaps <= 25 || swaps % 25 == 0) {
