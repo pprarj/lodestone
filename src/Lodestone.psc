@@ -665,31 +665,37 @@ Bool Function UnregisterForActorWokeAlias(Alias akAlias) global native
 ; Re-registering after a load is still worth doing. It is a correction
 ; rather than a restoration: the world moved while the save sat on disk.
 ;
-; 4. THE SUBSTITUTE MUST FIT THE LOADOUT, AND ONLY YOU CAN JUDGE THAT.
+; 4. YOUR SUBSTITUTES HAVE TO BE WEARABLE TOGETHER. NOBODY ELSE CHECKS.
 ;
-; The substitute is equipped on EVERY refusal of that item. Lodestone
-; does not ask whether it fits what the actor is equipping at that
-; instant, and it cannot: it sees one call, not the loadout the AI is
-; assembling around it.
+; Lodestone equips the substitute it was given, on every refusal of that
+; item, and validates nothing about it. It sees one call at a time - never
+; the set of blocks you registered, and never the outfit taking shape
+; around them. Whether two of your own substitutes can coexist on a body
+; is a question only you are holding the pieces to answer.
 ;
-; So a substitute that occupies a slot can contradict the very pass it
-; lands in. Measured, and it cost a consumer project a day of hunting:
-; a blocked SHIELD with a shield substitute. Every time the actor's AI
-; reached for a TWO-HANDED weapon, the refusal put a shield back in the
-; off hand - a loadout that cannot exist. The follower drew, failed,
-; and drew again, and never attacked. Nothing in the log looked wrong,
-; because from inside the hook nothing WAS wrong: each refusal and each
-; substitution did exactly what it was told.
+; MEASURED, and it cost a consumer project a day. The mod picked the best
+; allowed weapon and the best allowed off-hand piece in SEPARATE passes
+; that did not consult each other. The weapon pass elected a GREATSWORD;
+; the shield pass kept a SHIELD. Both were registered as substitutes, both
+; were equipped on refusal, and the two cannot be worn at once - so each
+; one displaced the other, about once a second, at 3.8 calls/s, until the
+; session ended. On screen the follower drew and sheathed without stopping
+; and took hits while doing it.
 ;
-; The rule that falls out of it: a substitute is safe when it can
-; coexist with anything else the actor might legitimately equip. A
-; same-slot downgrade of a WORN piece is the easy case - iron helmet
-; for ebony helmet - because the slot is occupied either way. Hands and
-; off hand are the hard case, because two-handed weapons claim both.
+; Lodestone did exactly what it was told, both times. Nothing in the log
+; looked wrong, because from inside the veto nothing WAS wrong.
+;
+; The rule: substitutes you register for the same actor must be able to go
+; on at the same time. A same-slot downgrade of a WORN piece is the easy
+; case - iron helmet for ebony helmet - because the slot is occupied
+; either way. Anything that competes for the same space on the body is the
+; hard case, and two-handed weapons are the sharpest example: they claim
+; the off hand, so a shield substitute and a two-handed weapon substitute
+; are a contradiction you have to resolve before you register them.
 ;
 ; If a blocked item has no substitute that satisfies that, pass None and
-; refuse plainly, or keep the item out of the actor's inventory instead
-; - a choice never taken needs no refusing.
+; refuse plainly, or keep the item out of the actor's inventory instead -
+; a choice never taken needs no refusing.
 ;
 ; --------------------------------------------------------------------
 ; COST
