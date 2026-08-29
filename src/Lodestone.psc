@@ -698,6 +698,37 @@ Bool Function UnregisterForActorWokeAlias(Alias akAlias) global native
 ; a choice never taken needs no refusing.
 ;
 ; --------------------------------------------------------------------
+; KNOWN INCOMPATIBILITY: Immersive Weapon Switch
+; --------------------------------------------------------------------
+;
+; IMMERSIVE WEAPON SWITCH (Nexus 139762) MAKES THIS UNUSABLE FOR AN NPC'S
+; WEAPONS. Measured in game, 08/2026. It is a popular SKSE plugin, so a
+; consumer's users will hit this.
+;
+; What the user sees: the follower draws and sheathes without stopping and
+; never attacks, while your policy is correct and the log is clean.
+;
+; MEASURED, same actor and same loadout, one variable changed:
+;
+;     IWS 'NPC_Switch' ON    0 attacks     238 IWS failures on that actor
+;     IWS 'NPC_Switch' OFF   14 attacks      0
+;
+; The block stayed armed the whole time in both runs, and the forbidden
+; weapon never went on. The veto's policy was never the problem.
+;
+; THE WORKAROUND IS THAT MOD'S OWN SETTING: turn NPC_Switch off. It leaves
+; the mod fully working for the player and lets NPC equips pass straight
+; through. Nothing to change on your side, and nothing to change here.
+;
+; WHY IT HAPPENS IS NOT ESTABLISHED, and this is deliberate wording. Both
+; plugins reach ActorEquipManager::EquipObject - this one hooks the body,
+; that one patches the call sites, so it runs first. Beyond that the story
+; is unverified: the ratio of its failures was never divided by the number
+; of attempts, and its own log says the sheathe animation FAILED to play,
+; which does not fit the obvious explanation. 'It causes this' is measured;
+; 'it causes this because' is not.
+
+; --------------------------------------------------------------------
 ; COST
 ; --------------------------------------------------------------------
 ;
