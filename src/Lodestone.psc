@@ -409,6 +409,23 @@ Int Function GetDetectionObserverCountExcluding(Actor akActor, Keyword akExclude
 
 ; --- Incapacitation (added in DLL 1.10.0, usable from 1.11.0) --------------
 ;
+; WORK IN PROGRESS. Every other module in this file is driven in play by a
+; consumer that uses it. This one is not: the mod it was built for is in
+; suspended development, so nothing calls it today. The code is complete and
+; the hooks install and report themselves in the log, but "no consumer has
+; exercised this" and "this works" are different claims, and only the first
+; is verified.
+;
+; The specific gap, named so you do not have to find it: the managed-actor
+; registry is serialized to the cosave and read back on load, and that round
+; trip has never run with a non-empty registry - only KnockoutActor fills it,
+; and nothing outside development has called it. The log line
+; "Incapacitation: saved 0 managed actor(s)" is the normal state today.
+;
+; Everything below is accurate about what the code DOES. None of it is a
+; claim that it has been proven in play. Build on it if it fits, and report
+; what you find.
+;
 ; A managed non-lethal knockout: mark an actor as managed-unconscious, query
 ; that state, and wake the actor - automatically (your own Papyrus timer) or
 ; forced. Built for a stealth takedown feature, but nothing here is specific
