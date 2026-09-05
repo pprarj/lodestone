@@ -790,127 +790,229 @@ Bool Function IsEquipBlocked(Actor akActor, Form akItem) global native
 Int Function GetEquipBlockCount() global native
 
 ;==============================================================
-; PRISMA UI BRIDGE (added in DLL 1.17.0)
+; WEB UI BRIDGE (added in DLL 1.17.0, renamed in 1.18.0)
 ;==============================================================
 ;
-; Papyrus access to the Prisma UI framework, which has no Papyrus surface of its
-; own: no .psc, no .pex, no .esp, and no native on its DLL. Without this bridge a
-; Papyrus-only mod cannot reach it at all, and cannot even ask whether it is
+; Papyrus access to a web UI backend, which has no Papyrus surface of its own:
+; no .psc, no .pex, no .esp, and no native on its DLL. Without this bridge a
+; Papyrus-only mod cannot reach one at all, and cannot even ask whether one is
 ; installed.
 ;
-; PRISMA UI IS OPTIONAL AND IS NOT A DEPENDENCY OF LODESTONE. With it absent
+; The backend supported today is Prisma UI. Ask WebUIGetBackend at runtime - do
+; not assume.
+;
+; THIS SURFACE WAS RENAMED IN 1.18.0. The 1.17.x names still answer and are
+; listed at the end of this section, each pointing at its replacement. They are
+; removed in 2.0.0, not before. The rename is not cosmetic: the name of one
+; supplier had been written into the contract of every consumer, and a contract
+; that names its supplier cannot outlive it.
+;
+; A BACKEND IS OPTIONAL AND IS NOT A DEPENDENCY OF LODESTONE. With none present
 ; every function here returns its sentinel and nothing else changes. Nothing
 ; inside Lodestone consumes this - it is exposed, never depended on.
 ;
-; THERE IS NO FOCUS SURFACE, AND THAT IS DELIBERATE. Focus, Unfocus and
-; HasAnyActiveFocus are not exposed. Prisma's focus menu is a single modal menu
-; with no focus stack: unfocusing one view closes it for every view, so with two
-; Prisma panels on screen the other one's cursor is stranded. That was measured
-; in game across all four configurations, with no mitigation found, and reported
-; to the framework's author without answer. A panel that never takes focus never
-; meets any of it. If you need real keyboard or mouse input, this bridge is not
-; enough yet - say so and it becomes its own piece of work, defect included.
+; THERE IS NO FOCUS SURFACE, AND THAT IS DELIBERATE. Ask
+; WebUIHasCapability("focus-stack") - today it answers False. The backend's focus
+; menu is a single modal menu with no focus stack: unfocusing one view closes it
+; for every view, so with two panels on screen the other one's cursor is
+; stranded. That was measured in game across all four configurations, with no
+; mitigation found, and reported to the backend's author without answer. A panel
+; that never takes focus never meets any of it. If you need real keyboard or
+; mouse input, this bridge is not enough yet - say so and it becomes its own
+; piece of work, defect included.
 ;
-; VIEWS ARE NAMED BY YOU, NOT BY A HANDLE. Prisma identifies a view with a 64-bit
-; value and the Papyrus Int is 32 bits, so handing it back would corrupt it. You
-; pass a string id you chose ("StrengthMatters"), and Lodestone keeps the map.
+; VIEWS ARE NAMED BY YOU, NOT BY A HANDLE. The backend identifies a view with a
+; 64-bit value and the Papyrus Int is 32 bits, so handing it back would corrupt
+; it. You pass a string id you chose ("StrengthMatters"), and Lodestone keeps the
+; map.
 ;
 ; NOTHING HERE SURVIVES A SAVE. After a load, no view exists. Recreate it the
 ; same way you recreate book text - the state is in your script, not in the DLL.
 ;
 ; A MUTATING CALL REPORTS THAT IT WAS ACCEPTED, NOT THAT IT FINISHED. Every call
-; into Prisma is handed to the game's main thread, because Papyrus does not run
-; there and the renderer does not belong to the Papyrus thread. True means the
-; request was queued and its arguments were valid.
+; into the backend is handed to the game's main thread, because Papyrus does not
+; run there and the renderer does not belong to the Papyrus thread. True means
+; the request was queued and its arguments were valid.
 ;
 ; THE ORDER THAT WORKS:
-;   1. PrismaAvailable()               - if False, offer no panel and stop
-;   2. PrismaCreateView(id, path)      - returns immediately, view not ready yet
-;   3. wait for the mod event LodestonePrismaViewReady (strArg = your view id),
-;      or poll PrismaIsViewReady(id)
-;   4. PrismaCall(...)                 - only now is it delivered
+;   1. WebUIAvailable()             - if False, offer no panel and stop
+;   2. WebUICreateView(id, path)    - returns immediately, view not ready yet
+;   3. wait for the mod event LodestoneWebUIViewReady (strArg = your view id),
+;      or poll WebUIIsViewReady(id)
+;   4. WebUICall(...)               - only now is it delivered
 ;
-; Gate on GetVersion() >= 1017000.
+; Gate on GetVersion() >= 1018000.
 
-; Whether Prisma UI is installed and answered.
+; Whether a web UI backend is present and answered.
 ;
 ; A probe, not a failure: False is the expected answer on most load orders and
 ; writes nothing to the log. Cannot fail.
-Bool Function PrismaAvailable() global native
+Bool Function WebUIAvailable() global native
 
-; Asks Prisma to build a view, registered under asViewId - any string you pick,
-; scoped to your mod by you (nothing namespaces it for you; prefer your mod's
-; name).
+; Asks the backend to build a view, registered under asViewId - any string you
+; pick, scoped to your mod by you (nothing namespaces it for you; prefer your
+; mod's name).
 ;
-; asHtmlPath is relative to Data\PrismaUI\views, the framework's own convention.
-; "MyMod/index.html" loads Data\PrismaUI\views\MyMod\index.html.
+; asViewPath is relative to the active backend's view root. "MyMod/index.html"
+; loads index.html inside your MyMod view folder.
+;
+; PACKAGING, AND THIS PART IS SPECIFIC TO THE BACKEND YOU ARE RUNNING RATHER THAN
+; PART OF THIS CONTRACT: with Prisma UI the view root is Data\PrismaUI\views, so
+; that example reads Data\PrismaUI\views\MyMod\index.html. Another backend roots
+; it somewhere else. The path you pass does not change; where it is rooted does.
 ;
 ; Returns True when the request was accepted - NOT when the panel is on screen.
-; Wait for LodestonePrismaViewReady, or poll PrismaIsViewReady, before calling
-; PrismaCall.
+; Wait for LodestoneWebUIViewReady, or poll WebUIIsViewReady, before calling
+; WebUICall.
 ;
 ; Idempotent: calling it again with the same id returns True and creates nothing.
 ;
-; Returns False if Prisma UI is absent, or if either argument is empty.
-Bool Function PrismaCreateView(String asViewId, String asHtmlPath) global native
+; Returns False if no backend is present, or if either argument is empty.
+Bool Function WebUICreateView(String asViewId, String asViewPath) global native
 
 ; Whether the view exists and its page has finished loading.
 ;
 ; Returns False for an unknown id, which is deliberately the same answer as "not
-; ready yet" - both mean PrismaCall would do nothing.
-Bool Function PrismaIsViewReady(String asViewId) global native
+; ready yet" - both mean WebUICall would do nothing. WebUIGetViewState is what
+; tells them apart.
+Bool Function WebUIIsViewReady(String asViewId) global native
 
-; Calls the JavaScript function asFunction on the view, handing it asJson as its
-; single argument. In the page, that is the global function of that name:
-; asFunction "MyUpdate" arrives at window.MyUpdate(asJson).
+; Calls the JavaScript function asJsFunction on the view, handing it asJson as
+; its single argument. In the page, that is the global function of that name:
+; asJsFunction "MyUpdate" arrives at window.MyUpdate(asJson).
 ;
 ; The payload is a plain string as far as the DLL is concerned - JSON is a
 ; convention between your script and your page, not something checked here.
 ;
 ; Returns True when the request was accepted. Returns False for an unknown id, an
-; empty function name, and for a view whose page is not ready - Prisma drops
+; empty function name, and for a view whose page is not ready - the backend drops
 ; those calls, so reporting success would be a lie.
-Bool Function PrismaCall(String asViewId, String asFunction, String asJson) global native
+Bool Function WebUICall(String asViewId, String asJsFunction, String asJson) global native
 
 ; Makes the view visible. Returns True when the request was accepted, False for
 ; an unknown id or a view that has not been built yet.
-Bool Function PrismaShow(String asViewId) global native
+Bool Function WebUIShow(String asViewId) global native
 
 ; Hides the view without destroying it. Returns True when the request was
 ; accepted, False for an unknown id or a view that has not been built yet.
-Bool Function PrismaHide(String asViewId) global native
+Bool Function WebUIHide(String asViewId) global native
 
-; Whether the view is hidden.
+; True when the view exists, is ready, and is visible.
+;
+; False for an unknown id, for a view that is not ready yet, and for a hidden
+; view - call WebUIGetViewState when you need to tell those three apart.
 ;
 ; This reports the last visibility Lodestone applied, not an answer read back
-; from Prisma. It is exact for every Show and Hide you issued.
-;
-; Returns False for an unknown id - the same answer as "visible". Ask
-; PrismaIsViewReady first if you need to tell those apart.
-Bool Function PrismaIsHidden(String asViewId) global native
+; from the backend. It is exact for every Show and Hide you issued.
+Bool Function WebUIIsViewVisible(String asViewId) global native
 
 ; Destroys the view and frees the id, along with every listener registered
 ; against it. Returns True when the request was accepted, False for an unknown
 ; id.
-Bool Function PrismaDestroy(String asViewId) global native
+Bool Function WebUIDestroyView(String asViewId) global native
 
 ; Routes a call made BY the page back to Papyrus as a mod event.
 ;
-; asJsFunction is a name Prisma injects into the page as a global function. When
-; the page calls it, Lodestone sends the mod event asModEvent, with whatever the
-; page passed as strArg and 0.0 as numArg. Receive it with RegisterForModEvent
-; like any other mod event.
+; Calling asJsFunction in the page delivers its argument to the mod event
+; asModEvent, with whatever the page passed as strArg and 0.0 as numArg. How that
+; name becomes callable in the page is the backend's business. Receive the event
+; with RegisterForModEvent like any other mod event.
 ;
 ; The event always arrives on the game thread, never on the thread the page's
 ; callback ran on. That indirection is the point: dispatching a mod event from
-; inside the framework's callback thread is the mistake this prevents.
+; inside the backend's callback thread is the mistake this prevents.
 ;
 ; Registering the same view and mod event again reuses its slot rather than
 ; taking a second one, so re-registering after a load is safe.
 ;
-; There are 32 listener slots across every view and every mod. Running out is
-; logged as an error and returns False.
+; There are a finite number of listener slots, 32 today, shared across every view
+; and every mod - ask WebUIGetListenerSlotsFree. Running out is logged as an
+; error and returns False.
 ;
-; Returns False if Prisma UI is absent, for an unknown or not-yet-built view, for
-; an empty name, or when the slots are full.
+; Returns False if no backend is present, for an unknown or not-yet-built view,
+; for an empty name, or when the slots are full.
+Bool Function WebUIRegisterListener(String asViewId, String asJsFunction, String asModEvent) global native
+
+; Name of the active web UI backend, for example "PrismaUI". Empty string when
+; no backend is present.
+;
+; THIS IS FOR YOUR LOG, NOT FOR YOUR CONTROL FLOW. Do not branch on it. A
+; consumer that writes If WebUIGetBackend() == "PrismaUI" has moved the vendor
+; name out of nine function names and into a string compare that no compiler
+; checks. Ask WebUIHasCapability what the backend can do; ask this only when a
+; human is going to read the answer.
+String Function WebUIGetBackend() global native
+
+; Whether the active backend supports a named capability.
+;
+; An unknown name returns False and logs nothing - asking about a capability
+; that does not exist yet is a valid question with a valid answer. That is what
+; makes this safe to call from a consumer written against an older Lodestone.
+;
+; Names defined in 1.18.0:
+;   "focus-stack"  can two views hold focus independently
+;   "view-order"   can a view stacking order be set
+;   "inspector"    can a developer inspector be opened on a view
+;
+; Returns False when no backend is present.
+Bool Function WebUIHasCapability(String asCapability) global native
+
+; State of one view in a single call, resolving the ambiguity between unknown,
+; still building, ready and hidden, and ready and visible.
+;
+;   -1  unknown id, or no backend present
+;    0  created, page has not loaded yet
+;    1  ready, hidden
+;    2  ready, visible
+Int Function WebUIGetViewState(String asViewId) global native
+
+; How many listener slots are still free, out of a finite pool shared by every
+; view and every mod.
+;
+; Diagnostic: a consumer that expects a known number of listeners can watch this
+; and notice a registration loop. Returns -1 when no backend is present.
+Int Function WebUIGetListenerSlotsFree() global native
+
+;--------------------------------------------------------------
+; DEPRECATED - the 1.17.x names
+;--------------------------------------------------------------
+;
+; Each forwards to its replacement and keeps working for the whole 1.18.x cycle,
+; so a .pex built against 1.17.x does not have to be recompiled. They are removed
+; in 2.0.0. Papyrus has no deprecation attribute; a comment is what there is.
+;
+; The mod event LodestonePrismaViewReady is deprecated on the same terms. It is
+; still sent, with the same strArg, from the same point as
+; LodestoneWebUIViewReady - both arrive in the same session. Register for the new
+; one.
+
+; DEPRECATED - use WebUIAvailable instead.
+Bool Function PrismaAvailable() global native
+
+; DEPRECATED - use WebUICreateView instead.
+Bool Function PrismaCreateView(String asViewId, String asHtmlPath) global native
+
+; DEPRECATED - use WebUIIsViewReady instead.
+Bool Function PrismaIsViewReady(String asViewId) global native
+
+; DEPRECATED - use WebUICall instead.
+Bool Function PrismaCall(String asViewId, String asFunction, String asJson) global native
+
+; DEPRECATED - use WebUIShow instead.
+Bool Function PrismaShow(String asViewId) global native
+
+; DEPRECATED - use WebUIHide instead.
+Bool Function PrismaHide(String asViewId) global native
+
+; DEPRECATED - use WebUIIsViewVisible instead, and read its comment first: it
+; answers the OPPOSITE question. This one is left with its old sense on purpose,
+; so that a .pex built against 1.17.x is not silently handed an inverted answer.
+; True when the view was hidden; False for an unknown id, which is the same
+; answer as "visible".
+Bool Function PrismaIsHidden(String asViewId) global native
+
+; DEPRECATED - use WebUIDestroyView instead.
+Bool Function PrismaDestroy(String asViewId) global native
+
+; DEPRECATED - use WebUIRegisterListener instead.
 Bool Function PrismaRegisterListener(String asViewId, String asJsFunction, String asModEvent) global native

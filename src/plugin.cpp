@@ -50,9 +50,9 @@
 #include "Core/Log.h"
 #include "Core/MagicScaling.h"
 #include "Core/Papyrus.h"
-#include "Core/PrismaBridge.h"
 #include "Core/Serialization.h"
 #include "Core/SpellTomes.h"
+#include "Core/WebUIBridge.h"
 #include "Version.h"
 
 namespace
@@ -74,9 +74,9 @@ namespace
 		// do not exist yet, and CreateView at that moment queues forever or
 		// blocks the load chain. Only the pointer is taken - views are built
 		// when a consumer asks, which is necessarily later. See
-		// Core/PrismaBridge.h.
+		// Core/WebUIBridge.h.
 		if (a_msg->type == SKSE::MessagingInterface::kPostLoad) {
-			Lodestone::Core::PrismaBridge::Acquire();
+			Lodestone::Core::WebUIBridge::Acquire();
 		}
 
 		if (a_msg->type == SKSE::MessagingInterface::kDataLoaded) {

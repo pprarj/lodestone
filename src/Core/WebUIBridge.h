@@ -1,9 +1,16 @@
-// PrismaBridge.h
+// WebUIBridge.h
 // Lodestone - Shared SKSE framework
 //
-// Module: PrismaBridge (Core)
-// Papyrus access to the Prisma UI framework, which has no Papyrus surface of
-// its own.
+// Module: WebUIBridge (Core)
+// Papyrus access to a web UI backend, which has no Papyrus surface of its own.
+//
+// THE MODULE IS NAMED FOR WHAT IT DOES, NOT FOR WHO SUPPLIES IT, and that is
+// what this file was renamed from PrismaBridge to say. The backend supported
+// today is Prisma UI, and the vendor name below is factually correct about it -
+// it is not left over. When a second backend arrives, the body of the .cpp
+// becomes PrismaUIBackend.cpp, where the name is still correct, and this file
+// keeps only the parts that are true of any backend. That split is designed and
+// is not built - see the phase document.
 //
 // WHY THIS EXISTS. Prisma UI ships a vtable and nothing else: no .psc, no .pex,
 // no .esp, and no native registered on its DLL - measured by listing the
@@ -47,11 +54,15 @@
 // into this framework for free. It arrives when a consumer needs input, and the
 // defect becomes that phase's problem, openly.
 //
-// Version gate for consumers: Lodestone.GetVersion() >= 1017000 (1.17.0).
+// A consumer asks about that with WebUIHasCapability("focus-stack"), which
+// answers False.
+//
+// Version gate for consumers of the current surface:
+// Lodestone.GetVersion() >= 1018000 (1.18.0). The 1.17.x names still answer.
 
 #pragma once
 
-namespace Lodestone::Core::PrismaBridge
+namespace Lodestone::Core::WebUIBridge
 {
 	// Acquires the Prisma UI API pointer. Call once, on kPostLoad.
 	//
@@ -71,12 +82,20 @@ namespace Lodestone::Core::PrismaBridge
 	void Acquire();
 
 	// Registers this module's natives on the "Lodestone" script.
-	// Registers: PrismaAvailable, PrismaCreateView, PrismaIsViewReady,
-	// PrismaCall, PrismaShow, PrismaHide, PrismaIsHidden, PrismaDestroy,
-	// PrismaRegisterListener.
 	//
-	// Registration happens whether or not Prisma UI is installed. The natives
-	// must exist for a consumer to be able to ask PrismaAvailable() at all, and
+	// 22 in total. The 13 of the current surface: WebUIAvailable,
+	// WebUICreateView, WebUIIsViewReady, WebUICall, WebUIShow, WebUIHide,
+	// WebUIIsViewVisible, WebUIDestroyView, WebUIRegisterListener,
+	// WebUIGetBackend, WebUIHasCapability, WebUIGetViewState,
+	// WebUIGetListenerSlotsFree.
+	//
+	// And the 9 deprecated 1.17.x names, which forward: PrismaAvailable,
+	// PrismaCreateView, PrismaIsViewReady, PrismaCall, PrismaShow, PrismaHide,
+	// PrismaIsHidden, PrismaDestroy, PrismaRegisterListener. They are removed in
+	// the next internal major (2.0.0), not before.
+	//
+	// Registration happens whether or not a backend is installed. The natives
+	// must exist for a consumer to be able to ask WebUIAvailable() at all, and
 	// a script that fails to find a function it calls is a Papyrus error the
 	// consumer cannot suppress.
 	//

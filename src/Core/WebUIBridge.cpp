@@ -1,21 +1,22 @@
-// PrismaBridge.cpp
+// WebUIBridge.cpp
 // Lodestone - Shared SKSE framework
 //
-// Native implementations of the Prisma UI bridge. See PrismaBridge.h for why
+// Native implementations of the Prisma UI bridge. See WebUIBridge.h for why
 // this module exists, why it is Core, and why it exposes no focus surface.
 
-#include "PrismaBridge.h"
+#include "WebUIBridge.h"
 
 #include "PrismaUI_API.h"
 
 #include <array>
+#include <cstdint>
 #include <functional>
 #include <mutex>
 #include <string>
 #include <unordered_map>
 #include <utility>
 
-namespace Lodestone::Core::PrismaBridge
+namespace Lodestone::Core::WebUIBridge
 {
 	namespace
 	{
@@ -123,12 +124,12 @@ namespace Lodestone::Core::PrismaBridge
 			try {
 				auto* task = SKSE::GetTaskInterface();
 				if (!task) {
-					spdlog::error("PrismaBridge: no SKSE task interface - request dropped.");
+					spdlog::error("WebUIBridge: no SKSE task interface - request dropped.");
 					return;
 				}
 				task->AddTask(std::move(a_work));
 			} catch (...) {
-				spdlog::error("PrismaBridge: AddTask threw - request dropped.");
+				spdlog::error("WebUIBridge: AddTask threw - request dropped.");
 			}
 		}
 
@@ -145,7 +146,7 @@ namespace Lodestone::Core::PrismaBridge
 			DispatchToGame([event = std::move(a_event), arg = std::move(a_arg)]() {
 				auto* source = SKSE::GetModCallbackEventSource();
 				if (!source) {
-					spdlog::error("PrismaBridge: no mod callback event source - '{}' not sent.", event);
+					spdlog::error("WebUIBridge: no mod callback event source - '{}' not sent.", event);
 					return;
 				}
 
@@ -159,12 +160,21 @@ namespace Lodestone::Core::PrismaBridge
 			});
 		}
 
-		// The mod event announcing that a view's DOM is ready.
+		// The mod events announcing that a view's DOM is ready.
 		//
 		// Fixed rather than chosen by the consumer, because a consumer that has not
 		// created a view yet has nowhere to have told us a name. strArg carries the
 		// view id, so one handler serves every view a mod owns.
-		constexpr const char* kViewReadyEvent = "LodestonePrismaViewReady";
+		//
+		// BOTH ARE SENT, WITH THE SAME strArg, FROM THE SAME POINT, and that is the
+		// only way a mod event can be renamed at all. The name is wire protocol: the
+		// consumer writes the string by hand into RegisterForModEvent, so renaming
+		// the native that creates the view does not reach it. A .pex built against
+		// 1.17.x keeps working, without recompiling, for as long as the old name is
+		// still sent. The old one goes away in the next internal major (2.0.0), not
+		// before, and not before the one known consumer has migrated.
+		constexpr const char* kViewReadyEvent           = "LodestoneWebUIViewReady";
+		constexpr const char* kViewReadyEventDeprecated = "LodestonePrismaViewReady";
 
 		// --- Callbacks from the framework ---------------------------------------
 
@@ -195,14 +205,15 @@ namespace Lodestone::Core::PrismaBridge
 					// A view this module did not create, or one destroyed between
 					// the framework's call and this lock. Nothing to announce
 					// either way.
-					spdlog::warn("PrismaBridge: DOM ready for an unknown view handle - ignored.");
+					spdlog::warn("WebUIBridge: DOM ready for an unknown view handle - ignored.");
 					return;
 				}
 
-				spdlog::info("PrismaBridge: view '{}' is ready.", viewId);
+				spdlog::info("WebUIBridge: view '{}' is ready.", viewId);
 				SendModEvent(kViewReadyEvent, viewId);
+				SendModEvent(kViewReadyEventDeprecated, viewId);
 			} catch (...) {
-				spdlog::error("PrismaBridge: OnDomReady threw - the view is usable but no ready "
+				spdlog::error("WebUIBridge: OnDomReady threw - the view is usable but no ready "
 							  "event was sent.");
 			}
 		}
@@ -225,10 +236,10 @@ namespace Lodestone::Core::PrismaBridge
 					viewId   = g_listeners[a_slot].viewId;
 				}
 
-				spdlog::debug("PrismaBridge: view '{}' fired slot {} -> mod event '{}'.", viewId, a_slot, modEvent);
+				spdlog::debug("WebUIBridge: view '{}' fired slot {} -> mod event '{}'.", viewId, a_slot, modEvent);
 				SendModEvent(std::move(modEvent), a_argument ? std::string(a_argument) : std::string());
 			} catch (...) {
-				spdlog::error("PrismaBridge: a JS listener threw on slot {} - the mod event was not sent.", a_slot);
+				spdlog::error("WebUIBridge: a JS listener threw on slot {} - the mod event was not sent.", a_slot);
 			}
 		}
 
@@ -253,35 +264,35 @@ namespace Lodestone::Core::PrismaBridge
 		// Papyrus VM is undefined behavior and can take the game down. Sentinels
 		// follow the framework convention - Bool -> false.
 
-		// Lodestone.PrismaAvailable() -> Bool
+		// Lodestone.WebUIAvailable() -> Bool
 		//
-		// Whether Prisma UI is installed and its API answered.
+		// Whether a web UI backend is present and its API answered.
 		//
 		// A PROBE, NOT A FAILURE. Nothing is logged when the answer is False: it is
 		// the expected answer on most load orders, and a consumer is meant to call
 		// this to decide whether to offer a panel at all.
 		//
 		// Cannot fail - it reads one pointer and has no error path.
-		bool PrismaAvailable(RE::StaticFunctionTag*)
+		bool WebUIAvailable(RE::StaticFunctionTag*)
 		{
 			return g_api != nullptr;
 		}
 
-		// Lodestone.PrismaCreateView(String, String) -> Bool
+		// Lodestone.WebUICreateView(String, String) -> Bool
 		//
-		// Reserves asViewId and asks the framework to build the view. asHtmlPath is
-		// relative to Data\PrismaUI\views - the framework's own convention, not
-		// this module's.
+		// Reserves asViewId and asks the backend to build the view. asViewPath is
+		// relative to the active backend's view root - the backend's own
+		// convention, not this module's.
 		//
 		// Returns True when the request was accepted, NOT when the view is on
-		// screen. The view becomes usable when the LodestonePrismaViewReady mod
-		// event fires for this id, or when PrismaIsViewReady() answers True.
+		// screen. The view becomes usable when the LodestoneWebUIViewReady mod
+		// event fires for this id, or when WebUIIsViewReady() answers True.
 		//
 		// Idempotent: a second call with the same id answers True and creates
 		// nothing.
 		//
-		// Returns False if Prisma UI is absent or either argument is empty.
-		bool PrismaCreateView(RE::StaticFunctionTag*, RE::BSFixedString a_viewId, RE::BSFixedString a_htmlPath)
+		// Returns False if no backend is present or either argument is empty.
+		bool WebUICreateView(RE::StaticFunctionTag*, RE::BSFixedString a_viewId, RE::BSFixedString a_viewPath)
 		{
 			try {
 				if (!g_api) {
@@ -289,16 +300,16 @@ namespace Lodestone::Core::PrismaBridge
 				}
 
 				const std::string viewId   = ToStd(a_viewId);
-				const std::string htmlPath = ToStd(a_htmlPath);
-				if (viewId.empty() || htmlPath.empty()) {
-					spdlog::warn("PrismaBridge: PrismaCreateView needs a non-empty view id and html path.");
+				const std::string viewPath = ToStd(a_viewPath);
+				if (viewId.empty() || viewPath.empty()) {
+					spdlog::warn("WebUIBridge: WebUICreateView needs a non-empty view id and view path.");
 					return false;
 				}
 
 				{
 					std::scoped_lock lock(g_mutex);
 					if (g_views.find(viewId) != g_views.end()) {
-						spdlog::debug("PrismaBridge: view '{}' already exists - create ignored.", viewId);
+						spdlog::debug("WebUIBridge: view '{}' already exists - create ignored.", viewId);
 						return true;
 					}
 					// Reserved before the task runs, so two calls in the same frame
@@ -306,11 +317,11 @@ namespace Lodestone::Core::PrismaBridge
 					g_views.emplace(viewId, ViewRecord{});
 				}
 
-				DispatchToGame([viewId, htmlPath]() {
-					const PrismaView handle = g_api->CreateView(htmlPath.c_str(), &OnDomReady);
+				DispatchToGame([viewId, viewPath]() {
+					const PrismaView handle = g_api->CreateView(viewPath.c_str(), &OnDomReady);
 
 					// True when the id was released while this create was queued -
-					// PrismaDestroy ran in between. The view has to be thrown away,
+					// a destroy ran in between. The view has to be thrown away,
 					// but not from under the lock: OnDomReady arrives on the
 					// Ultralight thread and takes the same mutex, so calling back
 					// into the framework while holding it is a stall waiting to
@@ -324,18 +335,19 @@ namespace Lodestone::Core::PrismaBridge
 							orphaned = true;
 						} else if (handle == 0) {
 							g_views.erase(it);
-							spdlog::error("PrismaBridge: CreateView failed for '{}' - check that the view folder "
-										  "exists under Data\\PrismaUI\\views and holds the file named by '{}'.",
-								viewId, htmlPath);
+							spdlog::error("WebUIBridge: CreateView failed for '{}' - check that the view folder "
+										  "exists under the backend's view root (Data\\PrismaUI\\views for "
+										  "Prisma UI) and holds the file named by '{}'.",
+								viewId, viewPath);
 						} else {
 							it->second.handle = handle;
-							spdlog::info("PrismaBridge: view '{}' created from '{}'.", viewId, htmlPath);
+							spdlog::info("WebUIBridge: view '{}' created from '{}'.", viewId, viewPath);
 						}
 					}
 
 					if (orphaned && handle != 0) {
 						g_api->Destroy(handle);
-						spdlog::info("PrismaBridge: view '{}' was destroyed while being created - "
+						spdlog::info("WebUIBridge: view '{}' was destroyed while being created - "
 									 "the finished view was discarded.",
 							viewId);
 					}
@@ -343,23 +355,23 @@ namespace Lodestone::Core::PrismaBridge
 
 				return true;
 			} catch (const std::exception& e) {
-				spdlog::error("PrismaBridge: PrismaCreateView threw - {}", e.what());
+				spdlog::error("WebUIBridge: WebUICreateView threw - {}", e.what());
 				return false;
 			} catch (...) {
-				spdlog::error("PrismaBridge: PrismaCreateView threw an unknown exception.");
+				spdlog::error("WebUIBridge: WebUICreateView threw an unknown exception.");
 				return false;
 			}
 		}
 
-		// Lodestone.PrismaIsViewReady(String) -> Bool
+		// Lodestone.WebUIIsViewReady(String) -> Bool
 		//
-		// Whether the view exists and its DOM has finished loading. This is the
-		// poll-shaped answer to the same question LodestonePrismaViewReady pushes.
+		// Whether the view exists and its page has finished loading. This is the
+		// poll-shaped answer to the same question LodestoneWebUIViewReady pushes.
 		//
 		// Returns False for an unknown id, which is indistinguishable from "not
 		// ready yet" on purpose: both mean the same thing to a caller, which is
-		// that PrismaCall would do nothing.
-		bool PrismaIsViewReady(RE::StaticFunctionTag*, RE::BSFixedString a_viewId)
+		// that WebUICall would do nothing. WebUIGetViewState tells them apart.
+		bool WebUIIsViewReady(RE::StaticFunctionTag*, RE::BSFixedString a_viewId)
 		{
 			try {
 				std::scoped_lock lock(g_mutex);
@@ -370,22 +382,22 @@ namespace Lodestone::Core::PrismaBridge
 			}
 		}
 
-		// Lodestone.PrismaCall(String, String, String) -> Bool
+		// Lodestone.WebUICall(String, String, String) -> Bool
 		//
 		// Calls a JavaScript function on the view's JS interop surface, handing it
 		// asJson as its single argument.
 		//
 		// Returns True when the request was accepted. Returns False for an unknown
-		// id, for an empty function name, and for a view whose DOM is not ready -
-		// the framework drops those calls, so reporting success would be a lie.
-		bool PrismaCall(RE::StaticFunctionTag*, RE::BSFixedString a_viewId, RE::BSFixedString a_function, RE::BSFixedString a_json)
+		// id, for an empty function name, and for a view whose page is not ready -
+		// the backend drops those calls, so reporting success would be a lie.
+		bool WebUICall(RE::StaticFunctionTag*, RE::BSFixedString a_viewId, RE::BSFixedString a_jsFunction, RE::BSFixedString a_json)
 		{
 			try {
 				if (!g_api) {
 					return false;
 				}
 
-				const std::string function = ToStd(a_function);
+				const std::string function = ToStd(a_jsFunction);
 				if (function.empty()) {
 					return false;
 				}
@@ -407,7 +419,7 @@ namespace Lodestone::Core::PrismaBridge
 
 				return true;
 			} catch (...) {
-				spdlog::error("PrismaBridge: PrismaCall threw.");
+				spdlog::error("WebUIBridge: WebUICall threw.");
 				return false;
 			}
 		}
@@ -442,59 +454,69 @@ namespace Lodestone::Core::PrismaBridge
 			return true;
 		}
 
-		// Lodestone.PrismaShow(String) -> Bool
+		// Lodestone.WebUIShow(String) -> Bool
 		//
 		// Returns True when the request was accepted, False for an unknown id or a
 		// view that has not been built yet.
-		bool PrismaShow(RE::StaticFunctionTag*, RE::BSFixedString a_viewId)
+		bool WebUIShow(RE::StaticFunctionTag*, RE::BSFixedString a_viewId)
 		{
 			try {
 				return SetHidden(a_viewId, false);
 			} catch (...) {
-				spdlog::error("PrismaBridge: PrismaShow threw.");
+				spdlog::error("WebUIBridge: WebUIShow threw.");
 				return false;
 			}
 		}
 
-		// Lodestone.PrismaHide(String) -> Bool
+		// Lodestone.WebUIHide(String) -> Bool
 		//
 		// Returns True when the request was accepted, False for an unknown id or a
 		// view that has not been built yet.
-		bool PrismaHide(RE::StaticFunctionTag*, RE::BSFixedString a_viewId)
+		bool WebUIHide(RE::StaticFunctionTag*, RE::BSFixedString a_viewId)
 		{
 			try {
 				return SetHidden(a_viewId, true);
 			} catch (...) {
-				spdlog::error("PrismaBridge: PrismaHide threw.");
+				spdlog::error("WebUIBridge: WebUIHide threw.");
 				return false;
 			}
 		}
 
-		// Lodestone.PrismaIsHidden(String) -> Bool
+		// Lodestone.WebUIIsViewVisible(String) -> Bool
 		//
-		// The last visibility this module applied to the view - see ViewRecord for
-		// why it is mirrored rather than asked.
+		// True when the view exists, is ready, and is visible.
 		//
-		// Returns False for an unknown id, which is the same answer as "visible".
-		// A caller that needs to tell those apart asks PrismaIsViewReady first.
-		bool PrismaIsHidden(RE::StaticFunctionTag*, RE::BSFixedString a_viewId)
+		// THE SENSE IS INVERTED FROM THE 1.17.x NAME, ON PURPOSE. PrismaIsHidden
+		// answered False both for a hidden-by-nobody unknown id and for a visible
+		// view, which made the False useless on its own. Here every failure mode
+		// collapses to False and the True means exactly one thing. That was free to
+		// change because the old name had no callers at all - measured across the
+		// tree in 2026-09-03.
+		//
+		// This reports the last visibility this module applied - see ViewRecord for
+		// why it is mirrored rather than asked. It is exact for every Show and Hide
+		// that was issued.
+		//
+		// WebUIGetViewState is what tells unknown, not-ready and hidden apart.
+		bool WebUIIsViewVisible(RE::StaticFunctionTag*, RE::BSFixedString a_viewId)
 		{
 			try {
 				std::scoped_lock lock(g_mutex);
 				const auto       it = g_views.find(ToStd(a_viewId));
-				return it != g_views.end() && it->second.hidden;
+				return it != g_views.end() && it->second.handle != 0 && it->second.domReady &&
+					   !it->second.hidden;
 			} catch (...) {
 				return false;
 			}
 		}
 
-		// Lodestone.PrismaDestroy(String) -> Bool
+		// Lodestone.WebUIDestroyView(String) -> Bool
 		//
 		// Destroys the view and frees the id, along with every JS listener slot
 		// registered against it.
 		//
 		// Returns True when the request was accepted, False for an unknown id.
-		bool PrismaDestroy(RE::StaticFunctionTag*, RE::BSFixedString a_viewId)
+		bool WebUIDestroyView(RE::StaticFunctionTag*, RE::BSFixedString a_viewId)
 		{
 			try {
 				if (!g_api) {
@@ -526,30 +548,32 @@ namespace Lodestone::Core::PrismaBridge
 					DispatchToGame([handle]() { g_api->Destroy(handle); });
 				}
 
-				spdlog::info("PrismaBridge: view '{}' destroyed.", viewId);
+				spdlog::info("WebUIBridge: view '{}' destroyed.", viewId);
 				return true;
 			} catch (...) {
-				spdlog::error("PrismaBridge: PrismaDestroy threw.");
+				spdlog::error("WebUIBridge: WebUIDestroyView threw.");
 				return false;
 			}
 		}
 
-		// Lodestone.PrismaRegisterListener(String, String, String) -> Bool
+		// Lodestone.WebUIRegisterListener(String, String, String) -> Bool
 		//
 		// Makes the view's JS call to asJsFunction send the mod event asModEvent,
-		// with the JS argument as strArg and numArg 0.
+		// with the JS argument as strArg and numArg 0. How that name becomes
+		// callable inside the page is the backend's business.
 		//
 		// The consumer receives it with RegisterForModEvent, like any other mod
 		// event. It is delivered on the game thread, never on the thread the JS
-		// callback arrived on - dispatching a mod event from inside an Ultralight
+		// callback arrived on - dispatching a mod event from inside a backend
 		// callback is exactly the mistake this indirection exists to prevent.
 		//
 		// Registering the same (view, mod event) pair again reuses its slot rather
 		// than taking a second one.
 		//
-		// Returns False if Prisma UI is absent, for an unknown or unbuilt view, for
-		// an empty name, or when all listener slots are taken - see kMaxListeners.
-		bool PrismaRegisterListener(RE::StaticFunctionTag*, RE::BSFixedString a_viewId, RE::BSFixedString a_jsFunction, RE::BSFixedString a_modEvent)
+		// Returns False if no backend is present, for an unknown or unbuilt view,
+		// for an empty name, or when all listener slots are taken - see
+		// kMaxListeners and WebUIGetListenerSlotsFree.
+		bool WebUIRegisterListener(RE::StaticFunctionTag*, RE::BSFixedString a_viewId, RE::BSFixedString a_jsFunction, RE::BSFixedString a_modEvent)
 		{
 			try {
 				if (!g_api) {
@@ -597,7 +621,7 @@ namespace Lodestone::Core::PrismaBridge
 					}
 
 					if (slot == kMaxListeners) {
-						spdlog::error("PrismaBridge: all {} listener slots are in use - '{}' on view '{}' "
+						spdlog::error("WebUIBridge: all {} listener slots are in use - '{}' on view '{}' "
 									  "was not registered.",
 							kMaxListeners, jsFunction, viewId);
 						return false;
@@ -610,13 +634,210 @@ namespace Lodestone::Core::PrismaBridge
 					g_api->RegisterJSListener(handle, jsFunction.c_str(), g_thunks[slot]);
 				});
 
-				spdlog::info("PrismaBridge: view '{}' JS '{}' -> mod event '{}' (slot {}).",
+				spdlog::info("WebUIBridge: view '{}' JS '{}' -> mod event '{}' (slot {}).",
 					viewId, jsFunction, modEvent, slot);
 				return true;
 			} catch (...) {
-				spdlog::error("PrismaBridge: PrismaRegisterListener threw.");
+				spdlog::error("WebUIBridge: WebUIRegisterListener threw.");
 				return false;
 			}
+		}
+
+		// --- Natives added in 1.18.0 ---------------------------------------------
+
+		// Lodestone.WebUIGetBackend() -> String
+		//
+		// Name of the active web UI backend. Empty string when none is present.
+		//
+		// THIS IS FOR THE LOG, NOT FOR CONTROL FLOW, and the point of having it at
+		// all is that a player can paste the answer into a support thread. A
+		// consumer that branches on it has moved the vendor name out of nine
+		// function names and into a string compare that no compiler checks, which
+		// is the coupling this whole surface was renamed to remove.
+		// WebUIHasCapability is the one to ask when the answer decides something.
+		RE::BSFixedString WebUIGetBackend(RE::StaticFunctionTag*)
+		{
+			try {
+				return g_api ? RE::BSFixedString("PrismaUI") : RE::BSFixedString("");
+			} catch (...) {
+				return RE::BSFixedString("");
+			}
+		}
+
+		// Lodestone.WebUIHasCapability(String) -> Bool
+		//
+		// Whether the active backend supports a named capability.
+		//
+		// AN UNKNOWN NAME RETURNS False AND LOGS NOTHING, and that is the property
+		// that makes the vocabulary growable without a major. A consumer built
+		// against an older Lodestone simply never asks about a name added later;
+		// one built against a newer Lodestone asks an older DLL and gets False,
+		// which is the correct answer there. Adding a name is therefore never a
+		// breaking change - the mechanism is what could not be added later, so it
+		// ships now with three names rather than later with thirty.
+		//
+		// Answered from what the backend can do, never from which backend it is.
+		bool WebUIHasCapability(RE::StaticFunctionTag*, RE::BSFixedString a_capability)
+		{
+			try {
+				if (!g_api) {
+					return false;
+				}
+
+				const std::string capability = ToStd(a_capability);
+
+				// "focus-stack": can two views hold focus independently.
+				//
+				// False, and this is measured, not assumed. Prisma exposes Focus
+				// and Unfocus per view, but its focus menu is a single kModal with
+				// no stack: unfocusing one closes it for all of them. The capability
+				// exists; the stacking does not. See the header.
+				if (capability == "focus-stack") {
+					return false;
+				}
+
+				// "view-order": can a view's stacking order be set.
+				// PrismaUI_API.h SetOrder / GetOrder.
+				if (capability == "view-order") {
+					return true;
+				}
+
+				// "inspector": can a developer inspector be opened on a view.
+				// PrismaUI_API.h CreateInspectorView.
+				if (capability == "inspector") {
+					return true;
+				}
+
+				return false;
+			} catch (...) {
+				return false;
+			}
+		}
+
+		// Lodestone.WebUIGetViewState(String) -> Int
+		//
+		// The whole state of one view in one call, which is what the three separate
+		// Bool answers cannot give: each of them collapses several situations into
+		// one False.
+		//
+		//   -1  unknown id, or no backend present
+		//    0  created, page has not loaded yet
+		//    1  ready, hidden
+		//    2  ready, visible
+		std::int32_t WebUIGetViewState(RE::StaticFunctionTag*, RE::BSFixedString a_viewId)
+		{
+			try {
+				if (!g_api) {
+					return -1;
+				}
+
+				std::scoped_lock lock(g_mutex);
+				const auto       it = g_views.find(ToStd(a_viewId));
+				if (it == g_views.end()) {
+					return -1;
+				}
+				if (it->second.handle == 0 || !it->second.domReady) {
+					return 0;
+				}
+				return it->second.hidden ? 1 : 2;
+			} catch (...) {
+				return -1;
+			}
+		}
+
+		// Lodestone.WebUIGetListenerSlotsFree() -> Int
+		//
+		// How many listener slots are still free, out of a finite pool shared by
+		// every view and every mod.
+		//
+		// Diagnostic. A consumer that knows how many listeners it registers can
+		// watch this and notice a registration loop before the pool runs out, which
+		// is the failure this number replaces promising a fixed 32 in the contract.
+		//
+		// Returns -1 when no backend is present.
+		std::int32_t WebUIGetListenerSlotsFree(RE::StaticFunctionTag*)
+		{
+			try {
+				if (!g_api) {
+					return -1;
+				}
+
+				std::scoped_lock lock(g_mutex);
+				std::int32_t     free = 0;
+				for (const auto& slot : g_listeners) {
+					if (!slot.used) {
+						++free;
+					}
+				}
+				return free;
+			} catch (...) {
+				return -1;
+			}
+		}
+
+		// --- Deprecated 1.17.x names ---------------------------------------------
+		//
+		// Thin forwarding, kept for the whole 1.18.x cycle so a .pex built against
+		// 1.17.x keeps working without being recompiled. They go away in the next
+		// internal major (2.0.0), and not before the one known consumer has
+		// migrated and run.
+		//
+		// PrismaIsHidden is the exception and is NOT a forward: it keeps its old
+		// sense, because WebUIIsViewVisible deliberately answers the opposite
+		// question. Forwarding one to the other would silently invert the answer
+		// under a .pex that asked the old question - which no .pex does today, but
+		// lying to one that might is worse than keeping ten lines.
+
+		bool PrismaAvailable(RE::StaticFunctionTag* a_tag)
+		{
+			return WebUIAvailable(a_tag);
+		}
+
+		bool PrismaCreateView(RE::StaticFunctionTag* a_tag, RE::BSFixedString a_viewId, RE::BSFixedString a_htmlPath)
+		{
+			return WebUICreateView(a_tag, a_viewId, a_htmlPath);
+		}
+
+		bool PrismaIsViewReady(RE::StaticFunctionTag* a_tag, RE::BSFixedString a_viewId)
+		{
+			return WebUIIsViewReady(a_tag, a_viewId);
+		}
+
+		bool PrismaCall(RE::StaticFunctionTag* a_tag, RE::BSFixedString a_viewId, RE::BSFixedString a_function, RE::BSFixedString a_json)
+		{
+			return WebUICall(a_tag, a_viewId, a_function, a_json);
+		}
+
+		bool PrismaShow(RE::StaticFunctionTag* a_tag, RE::BSFixedString a_viewId)
+		{
+			return WebUIShow(a_tag, a_viewId);
+		}
+
+		bool PrismaHide(RE::StaticFunctionTag* a_tag, RE::BSFixedString a_viewId)
+		{
+			return WebUIHide(a_tag, a_viewId);
+		}
+
+		// The old question, with the old answer. See the note above.
+		bool PrismaIsHidden(RE::StaticFunctionTag*, RE::BSFixedString a_viewId)
+		{
+			try {
+				std::scoped_lock lock(g_mutex);
+				const auto       it = g_views.find(ToStd(a_viewId));
+				return it != g_views.end() && it->second.hidden;
+			} catch (...) {
+				return false;
+			}
+		}
+
+		bool PrismaDestroy(RE::StaticFunctionTag* a_tag, RE::BSFixedString a_viewId)
+		{
+			return WebUIDestroyView(a_tag, a_viewId);
+		}
+
+		bool PrismaRegisterListener(RE::StaticFunctionTag* a_tag, RE::BSFixedString a_viewId, RE::BSFixedString a_jsFunction, RE::BSFixedString a_modEvent)
+		{
+			return WebUIRegisterListener(a_tag, a_viewId, a_jsFunction, a_modEvent);
 		}
 	}
 
@@ -625,11 +846,11 @@ namespace Lodestone::Core::PrismaBridge
 		g_api = PRISMA_UI_API::RequestPluginAPI<PRISMA_UI_API::IVPrismaUI1>();
 
 		if (g_api) {
-			spdlog::info("PrismaBridge: Prisma UI found - bridge active.");
+			spdlog::info("WebUIBridge: Prisma UI found - bridge active.");
 		} else {
 			// Not an error. See the header: this is the common case, and a consumer
 			// asking PrismaAvailable() is expecting it.
-			spdlog::info("PrismaBridge: Prisma UI not present - bridge inactive, "
+			spdlog::info("WebUIBridge: Prisma UI not present - bridge inactive, "
 						 "natives return their sentinels.");
 		}
 	}
@@ -637,10 +858,26 @@ namespace Lodestone::Core::PrismaBridge
 	bool RegisterFuncs(RE::BSScript::IVirtualMachine* a_vm)
 	{
 		if (!a_vm) {
-			spdlog::error("PrismaBridge: null VM, cannot register natives.");
+			spdlog::error("WebUIBridge: null VM, cannot register natives.");
 			return false;
 		}
 
+		// The 1.18.0 surface.
+		a_vm->RegisterFunction("WebUIAvailable", "Lodestone", WebUIAvailable);
+		a_vm->RegisterFunction("WebUICreateView", "Lodestone", WebUICreateView);
+		a_vm->RegisterFunction("WebUIIsViewReady", "Lodestone", WebUIIsViewReady);
+		a_vm->RegisterFunction("WebUICall", "Lodestone", WebUICall);
+		a_vm->RegisterFunction("WebUIShow", "Lodestone", WebUIShow);
+		a_vm->RegisterFunction("WebUIHide", "Lodestone", WebUIHide);
+		a_vm->RegisterFunction("WebUIIsViewVisible", "Lodestone", WebUIIsViewVisible);
+		a_vm->RegisterFunction("WebUIDestroyView", "Lodestone", WebUIDestroyView);
+		a_vm->RegisterFunction("WebUIRegisterListener", "Lodestone", WebUIRegisterListener);
+		a_vm->RegisterFunction("WebUIGetBackend", "Lodestone", WebUIGetBackend);
+		a_vm->RegisterFunction("WebUIHasCapability", "Lodestone", WebUIHasCapability);
+		a_vm->RegisterFunction("WebUIGetViewState", "Lodestone", WebUIGetViewState);
+		a_vm->RegisterFunction("WebUIGetListenerSlotsFree", "Lodestone", WebUIGetListenerSlotsFree);
+
+		// The 1.17.x surface, deprecated. Removed in 2.0.0, not before.
 		a_vm->RegisterFunction("PrismaAvailable", "Lodestone", PrismaAvailable);
 		a_vm->RegisterFunction("PrismaCreateView", "Lodestone", PrismaCreateView);
 		a_vm->RegisterFunction("PrismaIsViewReady", "Lodestone", PrismaIsViewReady);
@@ -651,7 +888,7 @@ namespace Lodestone::Core::PrismaBridge
 		a_vm->RegisterFunction("PrismaDestroy", "Lodestone", PrismaDestroy);
 		a_vm->RegisterFunction("PrismaRegisterListener", "Lodestone", PrismaRegisterListener);
 
-		spdlog::info("PrismaBridge: natives registered (9).");
+		spdlog::info("WebUIBridge: natives registered (22 - 13 current, 9 deprecated).");
 		return true;
 	}
 }

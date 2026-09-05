@@ -16,8 +16,8 @@
 #include "Incapacitation.h"
 #include "MagicScaling.h"
 #include "PluginInfo.h"
-#include "PrismaBridge.h"
 #include "SpellTomes.h"
+#include "WebUIBridge.h"
 
 namespace Lodestone::Core::Papyrus
 {
@@ -43,7 +43,7 @@ namespace Lodestone::Core::Papyrus
 		ok &= ChannelInfo::RegisterFuncs(a_vm);    // L0 - channel diagnostics
 		ok &= Incapacitation::RegisterFuncs(a_vm); // Hook A - managed knockout
 		ok &= EquipVeto::RegisterFuncs(a_vm);      // 1.16.0 - equip veto
-		ok &= PrismaBridge::RegisterFuncs(a_vm);   // 1.17.0 - Prisma UI bridge
+		ok &= WebUIBridge::RegisterFuncs(a_vm);     // 1.17.0 - web UI bridge
 
 		if (ok) {
 			spdlog::info("Papyrus: all modules registered.");
