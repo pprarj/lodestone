@@ -207,7 +207,7 @@ The one thing worth knowing up front: this codebase documents *why*, with eviden
 
 ## Credits
 
-- **[CommonLibSSE-NG](https://github.com/alandtse/CommonLibVR/tree/ng)**, the `ng` branch maintained by alandtse - continuing the NG line by CharmedBaryon, itself a fork of CommonLibSSE by Ryan-rsm-McKenzie and powerof3. MIT licensed.
+- **[CommonLibSSE-NG](https://github.com/alandtse/CommonLibVR/tree/ng)**, the `ng` branch maintained by alandtse - continuing the NG line by CharmedBaryon, itself a fork of CommonLibSSE by Ryan-rsm-McKenzie and powerof3. Licensed GPL-3.0-or-later at the pinned v6.7.1.
 - **[SKSE](https://skse.silverlock.org/)** by Ian Patterson, Stephen Abel and the SKSE team.
 - **[spdlog](https://github.com/gabime/spdlog)** by Gabi Melman. MIT licensed.
 
