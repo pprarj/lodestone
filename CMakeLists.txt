@@ -114,7 +114,9 @@ target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_23)
 target_link_libraries(${PROJECT_NAME} PRIVATE safetyhook::safetyhook)
 
 # Where the generated Version.h is found by #include "Version.h", and where the
-# vendored PrismaUI API header is found by #include "PrismaUI_API.h".
+# PrismaUI API header is found by #include "PrismaUI_API.h". That header is not
+# tracked here - it is third-party, under its own license - and has to be copied
+# into extern/prismaui-api/ before building. See the README in that folder.
 target_include_directories(${PROJECT_NAME} PRIVATE
     "${CMAKE_CURRENT_BINARY_DIR}/generated"
     "${CMAKE_CURRENT_SOURCE_DIR}/extern/prismaui-api"

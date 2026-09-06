@@ -182,6 +182,8 @@ CommonLibSSE-NG comes from a git submodule pinned to a release tag; vcpkg covers
 git submodule update --init --recursive
 ```
 
+One header is not in the repository and has to be copied in by hand: `extern/prismaui-api/PrismaUI_API.h`, the Prisma UI API header by StarkMP. It is third-party work under its own license, so it is not redistributed here; the README in that folder says where to get it. The DLL only compiles against it - nothing of it ships.
+
 ```
 cmake --preset <preset>
 cmake --build build --config Release

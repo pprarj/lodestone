@@ -14,3 +14,9 @@ vcpkg_installed/
 .vs/
 CMakeSettings.json
 *.user
+
+# Header da API do Prisma UI. E de terceiro, sob a Prisma UI License, e nao
+# entra no repositorio: quem compila copia o arquivo para ca - ver o README de
+# extern/prismaui-api/ e a secao Building do README. So compilacao; a DLL
+# distribuida nao carrega nada dele.
+extern/prismaui-api/PrismaUI_API.h
