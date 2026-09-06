@@ -219,6 +219,10 @@ AI assistance was used during development to speed up the work. Every line here 
 
 ## License
 
-MIT. See `LICENSE`.
+GPL-3.0-only. See `LICENSE`.
 
-You are free to use, modify and redistribute this, including inside your own mod's requirements. If you build something on it, a link back is appreciated but not required.
+This was MIT until 2026-09-05. The DLL links CommonLibSSE-NG statically, and the pinned v6.7.1 is GPL-3.0-or-later, so the declaration now says what the shipped binary is. The source has been public on GitHub since 2026-08-18; nothing about where you get it changes.
+
+You are free to use, modify and redistribute this under the GPL, including inside your own mod's requirements. If you build something on it, a link back is appreciated but not required.
+
+The one third-party file the build needs, the Prisma UI API header, is not in this repository - see Building above. CommonLibSSE-NG is a submodule under its own license. Everything else tracked here is the author's, and the grant above covers all of it.
