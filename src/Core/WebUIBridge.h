@@ -77,6 +77,13 @@
 //   >= 1022000 (1.22.0)  the three focus natives and "view-focus".
 //   1.27.0 needs no gate of its own: "view-focus" started answering True on
 //   Prisma UI, and a consumer that already asks sees the change.
+//   >= 1030000 (1.30.0)  WebUIGetViewIds and WebUIGetVisibleViewIds.
+//
+// THE TWO ENUMERATION NATIVES GET NO CAPABILITY OF THEIR OWN, ON PURPOSE. They
+// read this module's own view table and call no backend, so they answer the
+// same with zero backends installed as with either one. A capability that can
+// only answer True teaches a consumer to ask a question with one answer, and
+// the version gate above already says whether they are there.
 
 #pragma once
 
@@ -125,12 +132,12 @@ namespace Lodestone::Core::WebUIBridge
 
 	// Registers this module's natives on the "Lodestone" script.
 	//
-	// 25 in total. The 16 of the current surface: WebUIAvailable,
+	// 27 in total. The 18 of the current surface: WebUIAvailable,
 	// WebUICreateView, WebUIIsViewReady, WebUICall, WebUIShow, WebUIHide,
 	// WebUIIsViewVisible, WebUIDestroyView, WebUIRegisterListener,
 	// WebUIGetBackend, WebUIHasCapability, WebUIGetViewState,
 	// WebUIGetListenerSlotsFree, WebUIFocusView, WebUIClearFocus,
-	// WebUIIsViewFocused.
+	// WebUIIsViewFocused, WebUIGetViewIds, WebUIGetVisibleViewIds.
 	//
 	// And the 9 deprecated 1.17.x names, which forward: PrismaAvailable,
 	// PrismaCreateView, PrismaIsViewReady, PrismaCall, PrismaShow, PrismaHide,

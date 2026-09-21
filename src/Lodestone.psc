@@ -1402,6 +1402,72 @@ Bool Function WebUIClearFocus(String asViewId) global native
 ; is present.
 Bool Function WebUIIsViewFocused(String asViewId) global native
 
+; --- Enumeration, added in 1.30.0 ---------------------------------------------
+;
+; Gate on GetVersion() >= 1030000.
+;
+; WHY THIS EXISTS. Two mods can each open a panel, and until now neither had any
+; way to notice the other. Both pick a corner, both ship the same corner as the
+; default, and one lands on top of the other. That is not a bug in either mod:
+; nothing they could call answered "is anyone else on screen". These two answer
+; it.
+;
+; THEY ANSWER "WHO IS OPEN", NOT "WHERE THEY ARE", AND THAT LIMIT IS REAL. This
+; bridge does not know where any view sits. The rectangle is CSS inside your own
+; page, and the numbers driving it are yours, pushed through WebUICall - both
+; halves are on your side of this contract and neither is on this one. What you
+; get here is who is sharing the screen with you. Deciding where to put yourself
+; is still your job, and still your code.
+;
+; NOT A CONTROL SURFACE. You can see another mod's view; you cannot move it,
+; hide it, outrank it, or refuse to share with it. Which panel sits where is a
+; decision for the mod that owns that panel, and handing one consumer a way to
+; shove another aside would be arbitration with bad manners. This is the same
+; posture as GetChannelContributorCount, for the same reason.
+;
+; THE ID IS THE ONLY IDENTITY THERE IS. You get back the ids passed to
+; WebUICreateView and nothing else. The bridge never learns which plugin a view
+; came from - WebUICreateView takes two strings and no Form, so there is no file
+; to derive a name from. In practice the id is the mod's name, because that is
+; what this contract tells you to pick, but that is a convention among
+; consumers and not something the framework enforces. Do not parse it for
+; anything load-bearing.
+;
+; ONE CALL EACH, NOT A COUNT AND A LOOP. Both hand back the whole list in a
+; single call. That is one frame instead of one per view, and - the part that
+; matters more - one consistent snapshot: there is no index that can go stale
+; between two calls because a third mod opened or closed a panel in between.
+
+; Every view this bridge knows, in any state: still building, ready and hidden,
+; ready and visible. Sorted by id.
+;
+; Sorted so that two calls over an unchanged set compare equal. That is the only
+; promise made about order - a given id's position is not stable across a create
+; or a destroy, and nothing here is an index worth keeping.
+;
+; Cannot fail. AN EMPTY ARRAY IS NOT A SENTINEL, it means no views. That is also
+; what you get with no backend installed, and the two do not need telling apart:
+; with no backend your own view does not exist either, so every decision you
+; would make from this list comes out the same.
+String[] Function WebUIGetViewIds() global native
+
+; The views that are on screen right now: created, page loaded, not hidden.
+; Sorted by id.
+;
+; THIS IS THE ONE TO ASK BEFORE YOU PLACE YOUR PANEL. A view that exists but is
+; hidden takes up no screen, and screen is what you are trying to share; reading
+; the other list here would have you dodging a panel nobody can see.
+;
+; The test is exactly WebUIIsViewVisible's, so this list and that function can
+; never disagree about one view.
+;
+; IF YOUR OWN ID IS MISSING, THIS LIST CANNOT TELL YOU WHY. Hidden, still
+; building, never created, and already destroyed all read the same here. Ask
+; WebUIGetViewIds, or WebUIGetViewState for the one id.
+;
+; Cannot fail; an empty array reads the same way as in WebUIGetViewIds.
+String[] Function WebUIGetVisibleViewIds() global native
+
 ; --- Menu prompts (added in DLL 1.26.0) ---------------------------------------
 ;
 ; Asks the player a question on screen and hands the answer back to your script.

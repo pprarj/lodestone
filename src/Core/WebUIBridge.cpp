@@ -3,7 +3,7 @@
 //
 // The backend-neutral half of the WebUI bridge: the view table, the listener
 // slot pool, the mod events, the main-thread dispatch, the single-holder focus
-// policy, and all 25 natives. Nothing here names a vendor or includes a
+// policy, and all 27 natives. Nothing here names a vendor or includes a
 // vendor's header.
 //
 // See WebUIBridge.h for why this module exists and why it is Core. See
@@ -15,6 +15,7 @@
 #include "Config.h"
 #include "WebUIBackend.h"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -23,6 +24,7 @@
 #include <string>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 namespace Lodestone::Core::WebUIBridge
 {
@@ -729,6 +731,7 @@ namespace Lodestone::Core::WebUIBridge
 				}
 			});
 
+
 			return true;
 		}
 
@@ -1202,6 +1205,100 @@ namespace Lodestone::Core::WebUIBridge
 			}
 		}
 
+		// --- Natives added in 1.30.0 ---------------------------------------------
+
+		// The ids of the views in g_views, sorted, optionally narrowed to the ones
+		// actually on screen. CALLER HOLDS g_mutex.
+		//
+		// SORTED BECAUSE g_views HAS NO ORDER TO INHERIT. It is an unordered_map,
+		// so the same table walked before and after an insert can hand back a
+		// different sequence, and a consumer comparing two snapshots would read
+		// that reshuffle as views having come and gone. Sorting by the id the
+		// consumer chose makes two calls over an unchanged table compare equal,
+		// which is the only promise this surface makes about order.
+		//
+		// The visible predicate is WebUIIsViewVisible's, to the letter, so that
+		// native and this list can never disagree about one view.
+		std::vector<std::string> CollectViewIds(bool a_visibleOnly)
+		{
+			std::vector<std::string> out;
+			out.reserve(g_views.size());
+
+			for (const auto& entry : g_views) {
+				const bool visible = entry.second.handle != 0 && entry.second.domReady &&
+									 !entry.second.hidden;
+				if (a_visibleOnly && !visible) {
+					continue;
+				}
+				out.push_back(entry.first);
+			}
+
+			std::sort(out.begin(), out.end());
+			return out;
+		}
+		// Lodestone.WebUIGetViewIds() -> String[]
+		//
+		// Every view this bridge currently knows, in any state: still building,
+		// ready and hidden, ready and visible. Sorted by id.
+		//
+		// ONE CALL, NOT A SWEEP, and that is why this is an array rather than the
+		// count-plus-index pair ChannelInfo uses for the same shape of question.
+		// Two reasons, and the second is the one that decided it. A native
+		// registered without a_callableFromTasklets waits for the main thread, so
+		// a count followed by N index calls costs N+1 frames. And those N+1 calls
+		// each take the lock separately: a view created or destroyed between two
+		// of them shifts every index after it, so the walk can miss a view or read
+		// one twice. One call under one lock is a snapshot that cannot disagree
+		// with itself, and there is no index-stability caveat to document because
+		// there is no index.
+		//
+		// IT ANSWERS "WHO IS OPEN", NOT "WHERE THEY ARE". This bridge has never
+		// known where a view sits on screen, and still does not. That rectangle is
+		// CSS inside the consumer's own page; the numbers driving it live in the
+		// consumer's Papyrus and are pushed through WebUICall. Neither half is
+		// here.
+		//
+		// Cannot fail. AN EMPTY ARRAY IS NOT A SENTINEL - it means no views, which
+		// is also the answer with no backend installed, and for any decision made
+		// from this list those two are the same: with no backend the caller's own
+		// view does not exist either.
+		std::vector<std::string> WebUIGetViewIds(RE::StaticFunctionTag*)
+		{
+			try {
+				std::scoped_lock lock(g_mutex);
+				return CollectViewIds(false);
+			} catch (...) {
+				spdlog::error("WebUIBridge: WebUIGetViewIds threw.");
+				return {};
+			}
+		}
+
+		// Lodestone.WebUIGetVisibleViewIds() -> String[]
+		//
+		// The subset of WebUIGetViewIds() that is on screen right now: created,
+		// page loaded, not hidden. Sorted by id.
+		//
+		// THIS IS THE ONE TO ASK BEFORE PLACING A PANEL. A view that exists but is
+		// hidden takes up no screen, and screen is what a consumer reading this is
+		// trying to share.
+		//
+		// THE OTHER ONE IS HOW YOU READ YOUR OWN ABSENCE. A view missing from this
+		// list is hidden, or still building, or was never created, or was
+		// destroyed - four situations this list alone cannot tell apart. Ask
+		// WebUIGetViewIds, or WebUIGetViewState for one id.
+		//
+		// Cannot fail; an empty array reads the same way as in WebUIGetViewIds.
+		std::vector<std::string> WebUIGetVisibleViewIds(RE::StaticFunctionTag*)
+		{
+			try {
+				std::scoped_lock lock(g_mutex);
+				return CollectViewIds(true);
+			} catch (...) {
+				spdlog::error("WebUIBridge: WebUIGetVisibleViewIds threw.");
+				return {};
+			}
+		}
+
 		// --- Deprecated 1.17.x names ---------------------------------------------
 		//
 		// Thin forwarding, kept for the whole 1.18.x cycle so a .pex built against
@@ -1365,6 +1462,9 @@ namespace Lodestone::Core::WebUIBridge
 		a_vm->RegisterFunction("WebUIClearFocus", "Lodestone", WebUIClearFocus);
 		a_vm->RegisterFunction("WebUIIsViewFocused", "Lodestone", WebUIIsViewFocused);
 
+		a_vm->RegisterFunction("WebUIGetViewIds", "Lodestone", WebUIGetViewIds);
+		a_vm->RegisterFunction("WebUIGetVisibleViewIds", "Lodestone", WebUIGetVisibleViewIds);
+
 		// The 1.17.x surface, deprecated. Removed in 2.0.0, not before.
 		a_vm->RegisterFunction("PrismaAvailable", "Lodestone", PrismaAvailable);
 		a_vm->RegisterFunction("PrismaCreateView", "Lodestone", PrismaCreateView);
@@ -1376,7 +1476,7 @@ namespace Lodestone::Core::WebUIBridge
 		a_vm->RegisterFunction("PrismaDestroy", "Lodestone", PrismaDestroy);
 		a_vm->RegisterFunction("PrismaRegisterListener", "Lodestone", PrismaRegisterListener);
 
-		spdlog::info("WebUIBridge: natives registered (25 - 16 current, 9 deprecated).");
+		spdlog::info("WebUIBridge: natives registered (27 - 18 current, 9 deprecated).");
 		return true;
 	}
 }
