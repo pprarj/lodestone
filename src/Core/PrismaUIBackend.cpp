@@ -597,7 +597,12 @@ namespace Lodestone::Core
 			// WHY THE CAPABILITY IS false, AND IT IS NOT THAT THE API IS
 			// MISSING. PrismaUI_API.h has Focus, Unfocus, HasFocus and
 			// HasAnyActiveFocus, all of them per view, and calling them would
-			// compile and would do something. Three measured facts say not to:
+			// compile and would do something. Three measured facts say not to.
+			//
+			// EACH FACT CARRIES THE VERSION IT WAS MEASURED AGAINST, because a
+			// fact about a vendor's behaviour with no version on it cannot be
+			// retested and goes stale in silence. Facts 1 and 2 were measured
+			// against Prisma UI 1.4.1 and 1.5.0; fact 3 is dated in its own text.
 			//
 			//   1. Focus is not a local operation here. The framework routes
 			//      input for the whole PROCESS, not per view: one elected view
@@ -605,12 +610,19 @@ namespace Lodestone::Core
 			//      Focusing one view takes the keyboard from every other Prisma
 			//      consumer in the game, including ones that never heard of
 			//      Lodestone.
+			//      RECONFIRMED ON 1.5.1 (2026-09-22): with the focus rework in
+			//      that release - MainThreadQueue, gameplayControlsOwner - a
+			//      third-party SKSE mod hotkey still fired while a bridge view
+			//      held focus. Capture by process survived the fix.
 			//   2. Unfocus closes the framework's single kModal focus menu for
 			//      every view at once, so a second view on screen is left with a
 			//      stranded cursor. A sibling project of this tree exhausted the
 			//      four-way flag matrix in game - both pauseGame and
 			//      disableFocusMenu, all combinations - and found no mitigation.
 			//      The two public flags do not touch the broken path.
+			//      NOT RETESTED SINCE. Dating fact 1 does not date this one: the
+			//      quick reopen that 1.5.1 claims to fix has not been exercised
+			//      by any run of this tree.
 			//   3. There is no panic key to escape with. The other backend
 			//      publishes an unswallowable chord of its own
 			//      (ToggleBrowserFocusByKeys, IBrowser.h); this API has no
