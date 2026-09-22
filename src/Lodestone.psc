@@ -1125,6 +1125,31 @@ Bool Function WebUIIsViewReady(String asViewId) global native
 ; The payload is a plain string as far as the DLL is concerned - JSON is a
 ; convention between your script and your page, not something checked here.
 ;
+; A STRING LITERAL CAN REACH YOUR PAGE WITH DIFFERENT CAPITALIZATION THAN YOU
+; WROTE, and that is the engine, not this bridge. Papyrus String literals are
+; interned in the game's string pool, which ignores case: a literal matching an
+; entry already there, differing only in case, comes back in THE SPELLING THE
+; POOL HOLDS - and any script, any mod, or the engine itself may have put that
+; entry there. Measured in game on 2026-09-22: a script sending "stop" reached
+; the page as "Stop", "done" as "Done", and "Master" as "master". The bridge was
+; instrumented at both ends in the same run and carried every payload byte for
+; byte, so there is nothing here to fix and no native could fix it - the spelling
+; is already changed before this function is entered. It is not specific to
+; WebUICall either; it reaches every native that takes a String. It only becomes
+; visible here because a page reads the payload as data.
+;
+; WHAT DECIDES IS COLLISION, AND EVERY LITERAL IS INTERNED ON ITS OWN, BEFORE
+; ANY CONCATENATION - so composing the payload at runtime does NOT protect it,
+; because the pieces are still literals. "stop" and "done" are common words, they
+; collide, and they flip. "start|" + pct + "|" + seg survives because the literal
+; is "start|", which is not a word anything else would have interned. Give every
+; literal a shape nothing else would use - a prefix, a separator, a marker - or
+; compare case-insensitively in your page.
+;
+; Do not branch on the exact case of a word you wrote as a literal, and do not
+; assume the case you saw once is stable: the same literal has been seen arriving
+; both ways within a single session.
+;
 ; Returns True when the request was accepted. Returns False for an unknown id, an
 ; empty function name, and for a view whose page is not ready - the backend drops
 ; those calls, so reporting success would be a lie.
