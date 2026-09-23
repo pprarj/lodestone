@@ -582,6 +582,14 @@ Int Function GetDetectionObserverCountExcluding(Actor akActor, Keyword akExclude
 ; claim that it has been proven in play. Build on it if it fits, and report
 ; what you find.
 ;
+; FOR A KNOCKDOWN - AN ACTOR ON THE GROUND AND BACK UP - USE KnockDown AND
+; KnockDownRelease, in their own block right after this one (1.31.0). The
+; physical-fall pair below, KnockoutFall and KnockoutRecover, is DEPRECATED:
+; it stays registered and behaves exactly as documented, so nothing compiled
+; against it breaks, but it never held an actor on the ground reliably and it
+; will not be changed to. KnockoutActor, WakeActor and the rest of this block
+; are not deprecated - they are the managed pacify state, a different thing.
+;
 ; A managed non-lethal knockout: mark an actor as managed-unconscious, query
 ; that state, and wake the actor - automatically (your own Papyrus timer) or
 ; forced. Built for a stealth takedown feature, but nothing here is specific
@@ -648,6 +656,8 @@ Bool Function KnockoutActor(Actor akActor) global native
 ; managed actor. Never throws.
 Bool Function WakeActor(Actor akActor) global native
 
+; DEPRECATED since 1.31.0 - use KnockDown. Kept registered and unchanged.
+;
 ; Registers akActor for the physical fall. It applies NOTHING by itself -
 ; the fall lands when Actor.SetUnconscious(True) runs on a registered actor,
 ; and without that call this is a no-op. Refuses (returns False) a None actor
@@ -702,6 +712,9 @@ Bool Function WakeActor(Actor akActor) global native
 ; Requires Lodestone.GetVersion() >= 1012000 (1.12.0).
 Bool Function KnockoutFall(Actor akActor) global native
 
+; DEPRECATED since 1.31.0 - use KnockDownRelease. Kept registered and
+; unchanged.
+;
 ; Gets akActor back on its feet, resyncing the 3D model and re-evaluating
 ; the AI package. A harmless False on an actor KnockoutFall never knocked
 ; down - nothing is touched. Leaves a corpse alone. Never throws.
@@ -764,6 +777,99 @@ Bool Function UnregisterForActorWokeAlias(Alias akAlias) global native
 ;   Event OnActorWoke(Actor akActor)
 ;       ; your handler
 ;   EndEvent
+;
+; KnockDownRelease dispatches this same event - see the block below.
+
+; --- Knockdown (added in DLL 1.31.0) ---------------------------------------
+;
+; An actor on the ground, held there, and stood back up - one call each way:
+;
+;     Int result = Lodestone.KnockDown(akTarget, akAttacker)
+;     If result >= 0
+;         ; down now (0), or already down through KnockDown (1)
+;         ; ... your own timer ...
+;         Lodestone.KnockDownRelease(akTarget)
+;     Else
+;         ; refused - result says why, table below
+;     EndIf
+;
+; YOU NEVER CALL Actor.SetUnconscious. KnockDown and KnockDownRelease run the
+; engine's own unconscious handler themselves, and the fall and the stand-up
+; happen inside it. Calling SetUnconscious yourself on an actor you knocked
+; down is not supported.
+;
+; akSource IS WHERE THE FALL COMES FROM - the attacker, normally. The actor is
+; pushed away from that point, so it falls away from whoever hit it. None
+; means the player; a source standing on top of the target falls back to a
+; point behind the target. It is not a force: how hard the actor falls is not
+; a parameter, and there will not be one.
+;
+; What KnockDown does besides the fall: the target stops combat, its cast is
+; interrupted, it stops any furniture interaction, and it leaves the stealth
+; meter while down. Its life state is unconscious while down, and alive again
+; after the release.
+;
+; DURATION IS YOURS. There is no timer in this framework - see the note at the
+; top of this file. The actor stays down until you call KnockDownRelease.
+;
+; A LOAD ENDS EVERY KNOCKDOWN. An actor that was down when the game was saved
+; comes back STANDING after that save is loaded - life state alive,
+; IsKnockedDown False - and NO OnActorWoke is dispatched for it. Treat a game
+; load as the end of every knockdown you started: re-arm nothing, and a
+; KnockDownRelease that arrives afterwards is a harmless False. The reason is
+; that the event registration is per session, so an event fired at load time
+; would reach you on some loads and not on others.
+;
+; A TARGET THAT DIES while down is dropped automatically; KnockDownRelease then
+; returns True and dispatches nothing, because it did not wake.
+;
+; THE TWO PATHS DO NOT MIX ON ONE ACTOR. KnockDown refuses (-5) an actor that
+; KnockoutActor is managing, or that the deprecated KnockoutFall armed.
+;
+; Returned by KnockDown - NEGATIVE IS A REFUSAL, zero or positive is success:
+;
+;     0   knocked down now
+;     1   already down through KnockDown - nothing done
+;    -1   akTarget is None
+;    -2   akTarget is dead
+;    -3   akTarget is the player
+;    -4   life state not alive (bleeding out, unconscious by another path...)
+;    -5   managed by KnockoutActor, or armed by the deprecated KnockoutFall
+;    -6   no 3D loaded, or no AI process
+;    -7   the fall did not apply inside the handler - undone, actor unchanged
+;   -10   unavailable: Knockout Extensions is loaded
+;   -11   unavailable: the handler hook is not installed (VR, or install
+;         failed - the log says which)
+;   -12   unavailable: another plugin redirected the handler's call site
+;
+; -10, -11 and -12 hold for the WHOLE SESSION; GetKnockDownAvailability
+; returns the same value up front, so a menu can say why before anything is
+; tried.
+;
+; KNOCKOUT EXTENSIONS. It rewrites the same call site this module hooks, and
+; the two cannot share it. With it loaded, this module does not install its
+; hook at all and every KnockDown returns -10. The deprecated KnockoutFall path
+; goes through the same hook and stops working too. Nothing else changes.
+;
+; Requires Lodestone.GetVersion() >= 1031000 (1.31.0).
+
+; Drops akTarget and holds it on the ground until KnockDownRelease. Returns a
+; code - see the table above. Never throws.
+Int Function KnockDown(Actor akTarget, ObjectReference akSource = None) global native
+
+; Stands akTarget back up and gives it back to its AI, then dispatches
+; OnActorWoke. False, and nothing touched, on an actor that is not down
+; through KnockDown - including after a load, which already stood it up.
+; Never throws.
+Bool Function KnockDownRelease(Actor akTarget) global native
+
+; Is akTarget down through KnockDown right now? From this module's own
+; record, not from the engine. None -> False.
+Bool Function IsKnockedDown(Actor akTarget) global native
+
+; 0 if KnockDown can work this session; otherwise -10, -11 or -12, with the
+; meaning in the table above. Fixed once the game has loaded its data.
+Int Function GetKnockDownAvailability() global native
 
 ;==============================================================
 ; EQUIP VETO - since 1.16.0

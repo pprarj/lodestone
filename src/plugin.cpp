@@ -97,6 +97,11 @@ namespace
 		// messages those are is the module's business, not this file's.
 		Lodestone::Core::MenuPrompt::HandleSKSEMessage(a_msg);
 
+		// Incapacitation stands up, at kPostLoadGame, the actors a save says
+		// were knocked down - a load ends every knockdown. Same shape as
+		// MenuPrompt: the module picks its message.
+		Lodestone::Core::Incapacitation::HandleSKSEMessage(a_msg);
+
 		if (a_msg->type == SKSE::MessagingInterface::kDataLoaded) {
 			Lodestone::Core::CastTime::Install();
 			Lodestone::Core::BookFramework::Install();

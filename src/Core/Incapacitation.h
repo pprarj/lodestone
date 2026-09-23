@@ -99,7 +99,29 @@
 //   Bool  Function UnregisterForActorWoke(Form akReceiver) global native
 //   Bool  Function RegisterForActorWokeAlias(Alias akAlias) global native
 //   Bool  Function UnregisterForActorWokeAlias(Alias akAlias) global native
+//   Int   Function KnockDown(Actor akTarget, ObjectReference akSource = None) global native
+//   Bool  Function KnockDownRelease(Actor akTarget) global native
+//   Bool  Function IsKnockedDown(Actor akTarget) global native
+//   Int   Function GetKnockDownAvailability() global native
 //   Event OnActorWoke(Actor akActor)
+//
+// THE KNOCKDOWN (phase L-K1) SUPERSEDES THE FALL ABOVE, which stays
+// registered and unchanged. KnockDown drops and holds, KnockDownRelease
+// stands up and gives back, and both call the SetUnconscious handler
+// themselves - the consumer never calls Actor.SetUnconscious. Refusals carry
+// a reason (an Int, negative). Duration stays with the consumer. A load ends
+// every knockdown: a second cosave record, 'KND1', lists who was down, and
+// HandleSKSEMessage stands them up at kPostLoadGame. With Knockout
+// Extensions loaded, or the call site redirected by another plugin, the
+// SetUnconscious hook is not installed and the knockdown is refused all
+// session. Decisions and the discarded alternatives: Docs/TESTPLAN-L-K1.md
+// in the private workspace.
+//
+// THE GET-UP HOOK ON ACTOR'S VTABLE IS PARKED - it could never fire for an
+// NPC, since every NPC is a Character with its own table. A counting-only
+// copy on Character's table saw 0 calls while actors were held down through
+// KnockDown, so the hold needs no get-up hook, and there is none on either
+// table.
 //
 // This module now uses all THREE seams: RegisterFuncs(vm) plugs natives into
 // the dispatcher (Core/Papyrus.cpp) like every module, the cosave entry
@@ -120,16 +142,19 @@ namespace Lodestone::Core::Incapacitation
 	// Registers: KnockoutActor, WakeActor, KnockoutFall, KnockoutRecover,
 	// IsManagedUnconscious, GetActorLifeState, RegisterForActorWoke,
 	// UnregisterForActorWoke, RegisterForActorWokeAlias,
-	// UnregisterForActorWokeAlias on the "Lodestone" script.
+	// UnregisterForActorWokeAlias, KnockDown, KnockDownRelease, IsKnockedDown,
+	// GetKnockDownAvailability on the "Lodestone" script.
 	//
 	// Returns false if any registration failed.
 	bool RegisterFuncs(RE::BSScript::IVirtualMachine* a_vm);
 
 	// Wires the two things this module needs the game to be up for: the
 	// TESDeathEvent sink that drops a dying actor from its sets, and the
-	// vtable hook on Actor::InitiateGetUpPackage that keeps a knocked-down
-	// actor from standing back up. Called on kDataLoaded from plugin.cpp,
-	// alongside the other modules' hook installation.
+	// SetUnconscious hook the knockdown runs through (refused, and the
+	// knockdown with it, when Knockout Extensions is loaded or the call site
+	// was redirected). The get-up hook on Actor's vtable is parked. Called on
+	// kDataLoaded from plugin.cpp, alongside the other modules' hook
+	// installation.
 	//
 	// Never throws, and the two halves are independent: either can fail
 	// without taking the other with it. Each failure logs what specifically
@@ -138,6 +163,11 @@ namespace Lodestone::Core::Incapacitation
 	// because those are the symptoms someone would otherwise be debugging
 	// from the wrong end.
 	void Install();
+
+	// Filters its own SKSE messages, like MenuPrompt: at kPostLoadGame it
+	// stands up every actor the save says was down through KnockDown.
+	// Called for every message from plugin.cpp. Never throws.
+	void HandleSKSEMessage(SKSE::MessagingInterface::Message* a_msg);
 
 	// THE COSAVE ENTRY POINTS, driven by Core/Serialization.
 	//
