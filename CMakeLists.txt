@@ -194,6 +194,35 @@ if(NOT DEFINED LODESTONE_OUTPUT_FOLDER AND DEFINED ENV{LODESTONE_OUTPUT_FOLDER})
     set(LODESTONE_OUTPUT_FOLDER "$ENV{LODESTONE_OUTPUT_FOLDER}")
 endif()
 
+# ---------------------------------------------------------------------------
+# Reproducible build of the shipped DLL.
+#
+# Without /Brepro the linker stamps the wall clock into the PE TimeDateStamp -
+# once in the COFF header and once more in the IMAGE_DEBUG_DIRECTORY entry that
+# mirrors it. Two clean builds of identical source then differ, which breaks
+# any comparison by hash: a different hash stops proving a different source.
+#
+# It also defeats the copy_if_different below. Those bytes differ on every
+# link, so the deploy never skips - every build rewrites the installed DLL,
+# including a build that changed nothing. With the game running that copy hits
+# a locked file, and with a measurement in progress it swaps the binary under
+# the session that is measuring it.
+#
+# /Brepro replaces the timestamp with a value derived from the link inputs, so
+# rebuilding a given commit reproduces the same bytes.
+#
+# Applied only to the plugin DLL: it is the distributed artifact. A test
+# executable never ships and nobody compares its hash.
+#
+# Measured in Soul Ledger D051 (2026-08): two clean builds of identical source
+# differed by 4 bytes out of 724992, every one of them timestamp. Campanha
+# 2026-09-25-brepro-nos-seis. Detail:
+# _Steward/Conhecimento/o-build-msvc-da-dll-nao-e-reproduzivel-sem-brepro.md
+# ---------------------------------------------------------------------------
+if(MSVC)
+    target_link_options(${PROJECT_NAME} PRIVATE "/Brepro")
+endif()
+
 if(NOT DEFINED LODESTONE_OUTPUT_FOLDER)
     set(LODESTONE_OUTPUT_FOLDER "G:/Modlists/Skyrim Dev/mods/Lodestone - DEV/SKSE/Plugins")
 endif()
