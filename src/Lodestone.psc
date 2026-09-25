@@ -1598,6 +1598,179 @@ String[] Function WebUIGetViewIds() global native
 ;
 ; Cannot fail; an empty array reads the same way as in WebUIGetViewIds.
 String[] Function WebUIGetVisibleViewIds() global native
+; --- Declared area, added in 1.32.0 -------------------------------------------
+;
+; Gate on GetVersion() >= 1032000. There is no capability to ask, and that is
+; deliberate: this is bookkeeping the bridge does by itself, identical whichever
+; backend is installed, so there is nothing whose answer could vary with the
+; backend. Capability is for "can the installed backend honour this"; the
+; version is for "does this function exist" - the same split written at the head
+; of the focus section.
+;
+; WHY THIS EXISTS. WebUIGetVisibleViewIds tells you WHO is sharing the screen.
+; It does not tell you how much of it they take, so a consumer could pick a
+; different corner deterministically but could never prove it had cleared
+; anybody. These two close that: one says how much room you take, the other
+; hands back everyone else's answer.
+;
+; IT IS A DECLARATION, NOT AN OBSERVATION, AND EVERY SENTENCE BELOW DEPENDS ON
+; THAT. This bridge still cannot see where a view draws - the rectangle is CSS
+; inside your own page, and it always was. What is stored here is what you said,
+; the last time you said it. Move your panel without redeclaring and the number
+; other mods read is wrong, nothing reports it, and the only symptom is somebody
+; politely avoiding a place you no longer are.
+;
+; So: declare after you move, and after your content changes height. That duty
+; is yours because the fact is yours; the bridge has no way to check it.
+;
+; STILL NOT A CONTROL SURFACE. Nothing here moves, resizes, hides or outranks
+; any view - not another mod's, and not your own. You say where you are; you
+; read where others say they are; you decide what to do about it in your own
+; page. The posture is the one the enumeration above already takes, for the same
+; reason.
+
+; Declares the area YOUR view occupies, in percent of screen.
+;
+; asViewId    the view you created. See "you declare your own" below
+; afX, afY    the top-left corner of your panel, in percent of screen
+; afWidth     how wide it is, in percent of screen width
+; afHeight    how tall it is, in percent of screen height
+; aiAnchor    which point your panel is pinned to, 0 to 8 - see the grid below
+;
+; PERCENT, AND NOT PIXELS. Your page does not know the player's resolution until
+; it runs, and the number you already push through WebUICall to place yourself is
+; a percentage in every consumer written so far. A pixel here would also sit one
+; short step from the backend's own rectangle, which IS in pixels, and the two
+; would be confused by somebody eventually.
+;
+; THE ANCHOR GRID, and the numbers are wire protocol - they do not get reordered:
+;
+;   0 top-left       1 top-centre       2 top-right
+;   3 middle-left    4 centre           5 middle-right
+;   6 bottom-left    7 bottom-centre    8 bottom-right
+;
+; THE ANCHOR IS NOT THE RECTANGLE AND CANNOT BE DERIVED FROM IT. It says which
+; corner you are pinned to, which is the corner that stays put while your
+; content grows. Two panels can hold the same rectangle and grow in opposite
+; directions. A reader uses it to know whether you are even on its axis: two
+; panels in opposite corners are not competing for anything, and finding that
+; out from coordinates alone means guessing.
+;
+; YOU DECLARE YOUR OWN. A Papyrus global native cannot tell who called it, and
+; WebUICreateView took two strings and no Form, so there is no plugin behind a
+; view for this to check against. Passing another mod's view id is therefore
+; possible and is a bug in your script: it makes everyone avoid that mod at a
+; rectangle it never claimed. Do not do it.
+;
+; OFF-SCREEN AND NEGATIVE ARE ALLOWED. A panel may legitimately hang past an
+; edge. This does not clamp to 0..100; it only refuses numbers that are not
+; numbers, and magnitudes past a million.
+;
+; A VIEW ID CANNOT CONTAIN "|". That character separates the fields of
+; WebUIGetDeclaredAreas, and a row nobody can split apart would break the other
+; rows in the same array, not only yours. Declaring from such a view is refused
+; rather than escaped, so that you find out now.
+;
+; Returns False for an unknown view, an empty id, an id holding "|", a number
+; that is not a usable percent, or an anchor outside 0..8. Declaring exactly what
+; you already declared returns True and pulses nothing.
+Bool Function WebUIDeclareArea(String asViewId, Float afX, Float afY, Float afWidth, Float afHeight, Int aiAnchor) global native
+
+; Every VISIBLE view that has declared an area, one row each:
+;
+;     viewId|x|y|width|height|anchor
+;
+; Percent with two decimals; anchor 0 to 8. Split on "|" - six fields, the first
+; of which is the id.
+;
+; ONE CALL, NOT A COUNT AND A LOOP, for the reason WebUIGetViewIds gives: a walk
+; takes the lock once per view, and a panel opening or closing in the middle
+; shifts everything after it. This is one consistent picture.
+;
+; THE ID IS IN THE ROW so you never pair two arrays by position and hope.
+;
+; SORTED BY ID, AND A SUBSEQUENCE OF WebUIGetVisibleViewIds - the same views, the
+; same predicate, the same order, minus whoever has not declared.
+;
+; THE ORDER IS NOT A SLOT, AND THIS IS THE ONE MISREADING WORTH GUARDING
+; AGAINST. The promise is the one made at WebUIGetViewIds: sorted so that two
+; calls over an unchanged set compare equal, and "a given id's position is not
+; stable across a create or a destroy, and nothing here is an index worth
+; keeping". Everyone reading at the same moment computes the same list. Nobody
+; may store the position they read and treat it as theirs.
+;
+; ABSENT IS NOT ZERO. A view that never declared does not appear at all; a view
+; that declared zeroes appears with zeroes. Those are different statements - "not
+; playing this game" and "playing, and I take no room" - and reading the first as
+; the second puts your panel on top of one that has simply not spoken yet.
+;
+; Cannot fail. An empty array means nobody visible has declared, which is also
+; what you get with no backend installed - and in that case your own view does
+; not exist either, so every decision you would make comes out the same.
+String[] Function WebUIGetDeclaredAreas() global native
+
+; --- The pulse, and the convention that makes it stop --------------------------
+;
+; THE MOD EVENT IS "LodestoneWebUIAreaChanged", and strArg is the id of the view
+; that just declared. Receive it with RegisterForModEvent like any other.
+;
+; It is sent when a declaration CHANGES something. Redeclaring the same rectangle
+; is silent, which is what stops a consumer that redeclares on a timer from
+; becoming a metronome the whole screen dances to.
+;
+; IT CARRIES NO GEOMETRY. It says only that somebody moved; call
+; WebUIGetDeclaredAreas for the numbers, and you get a picture that cannot
+; disagree with itself. A rectangle in the payload would be a second channel for
+; the same fact, and the listener that missed one event would hold a number the
+; snapshot denies.
+;
+; IT REACHES YOU TOO. A mod event goes to everyone registered, this bridge does
+; no routing, and there is no way to leave one listener out. strArg is how you
+; leave yourself out: if it is your own view id, you already know, so return.
+;
+; LISTENING IS OPTIONAL. Read on your own tick if you prefer - the pulse saves
+; you the polling, it is not the price of admission. A mod that never heard of
+; this event still declares, still appears in everyone's list, and is still
+; avoided by everyone who does listen.
+;
+; THE CONVENTION FOR WHO MOVES, AND IT IS A CONVENTION AND NOT A RULE. When two
+; declared areas overlap, the one that appears LATER in the sorted list keeps its
+; place, and the one that appears EARLIER adjusts. Nothing enforces this. A mod
+; that ignores it breaks nothing for anybody - it just goes back to being covered
+; and covering, which is where everyone was before this existed.
+;
+; WHY THERE HAS TO BE ONE. Two pages that both decide to yield will chase each
+; other; two that both decide to hold will sit on top of each other, which is the
+; defect this was built for. The tie has to break from a fact both sides read
+; identically, and on this bridge there is exactly one: position in the sorted
+; list. It is decided by the id you chose, which means alphabetical order, which
+; means a mod whose id sorts late holds its ground against mods that were there
+; first. That is stable and even-handed, and it is not intuitive - say it on your
+; mod page, not only here.
+;
+; AND THIS IS WHAT MAKES THE PULSE TERMINATE. Adjusting means declaring, and
+; declaring pulses, so a pulse can cause pulses. The chain ends because the
+; holder does not move:
+;
+;   A declares       -> pulse
+;   B hears, holds (B sorts later), redeclares nothing   -> silence
+;   A hears nothing further. Done.
+;
+; or, the other way round:
+;
+;   B declares       -> pulse
+;   A hears, yields, declares its new place              -> pulse
+;   B hears, holds, and declares nothing                 -> silence. Done.
+;
+; Without the convention neither step is the last one and the pair shuffles for
+; as long as both are on screen. If you write your own policy instead, make sure
+; it has a step that does not declare.
+;
+; THE BRIDGE DOES NOT ARBITRATE ANY OF THIS. It stores what you tell it, hands
+; back the set, and says out loud which way the convention falls. Nobody is moved
+; by anything but their own code.
+
+
 
 ; --- Menu prompts (added in DLL 1.26.0) ---------------------------------------
 ;

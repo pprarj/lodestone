@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -184,6 +185,29 @@ namespace Lodestone::Core::WebUIBridge
 		// handle back to a consumer truncates it and corrupts it. The consumer
 		// names its view with a string it chose, which also removes any question
 		// of what to do with a handle across a save: there is nothing to keep.
+		// The sentinel for "this view has never declared an area", added in
+		// 1.32.0.
+		//
+		// NOT ZERO, AND THE DIFFERENCE IS CONTRACTUAL. A view that declares
+		// 0,0,0,0 is saying it takes no screen - a panel that is on but drawn
+		// empty - and a view that never declared is saying nothing at all. Both
+		// are legitimate and they are not the same answer, so the absent one has
+		// to be a value no honest declaration can collide with. NaN would also
+		// work and reads worse in a log.
+		constexpr float kAreaUnset = -1.0e9f;
+
+		// The nine-point anchor grid, added in 1.32.0. Mirrored by name in
+		// Lodestone.psc; the numbers are wire protocol and do not get reordered.
+		constexpr std::int32_t kAnchorTopLeft      = 0;
+		constexpr std::int32_t kAnchorTopCenter    = 1;
+		constexpr std::int32_t kAnchorTopRight     = 2;
+		constexpr std::int32_t kAnchorMiddleLeft   = 3;
+		constexpr std::int32_t kAnchorCenter       = 4;
+		constexpr std::int32_t kAnchorMiddleRight  = 5;
+		constexpr std::int32_t kAnchorBottomLeft   = 6;
+		constexpr std::int32_t kAnchorBottomCenter = 7;
+		constexpr std::int32_t kAnchorBottomRight  = 8;
+
 		struct ViewRecord
 		{
 			// Which backend built this view, and therefore the one every later
@@ -262,6 +286,39 @@ namespace Lodestone::Core::WebUIBridge
 			// focus that the player escaped ten minutes ago, which would refuse
 			// every later request forever.
 			bool focused = false;
+
+			// The screen area this view's owner SAYS it occupies, added in
+			// 1.32.0. Percent of screen; see kAreaUnset for "never declared".
+			//
+			// DECLARED, NOT OBSERVED, AND THE WHOLE SURFACE HANGS ON THAT WORD.
+			// The bridge cannot see where a view draws - the rectangle is CSS
+			// inside the consumer's own page - so this is a copy of a number that
+			// lives somewhere else, and a copy goes stale the moment the page
+			// moves without saying so. That is a real cost and it was weighed:
+			// the only other way to learn the rectangle is to ask the backend,
+			// which means the main-thread queue, and a native cannot wait on a
+			// queued answer without blocking the VM against the game thread. The
+			// L-U9 TESTPLAN wrote both paths down before either was built.
+			//
+			// So the contract says declaration, everywhere it is mentioned, and
+			// the duty to redeclare after moving is the consumer's. A consumer
+			// that forgets does not break anyone: it simply goes on being avoided
+			// where it no longer is, which is the same thing that happens today
+			// to a consumer that declares nothing at all.
+			float areaX      = kAreaUnset;
+			float areaY      = kAreaUnset;
+			float areaWidth  = kAreaUnset;
+			float areaHeight = kAreaUnset;
+
+			// Nine-point grid, kAnchorTopLeft..kAnchorBottomRight. Meaningless
+			// while the rectangle is unset.
+			//
+			// IT IS NOT DERIVABLE FROM THE RECTANGLE, which is why it is carried
+			// and not computed. Two views can hold the identical rectangle and
+			// grow in opposite directions: the corner a panel is pinned to is
+			// where it stays put as its content changes, and that is the half a
+			// reader needs in order to guess where the neighbour is heading.
+			std::int32_t anchor = kAnchorTopLeft;
 		};
 
 		std::unordered_map<std::string, ViewRecord> g_views;
@@ -369,6 +426,28 @@ namespace Lodestone::Core::WebUIBridge
 		// before the one known consumer has migrated.
 		constexpr const char* kViewReadyEvent           = "LodestoneWebUIViewReady";
 		constexpr const char* kViewReadyEventDeprecated = "LodestonePrismaViewReady";
+
+		// The pulse a view's neighbours hear when somebody's declared area
+		// changes, added in 1.32.0. strArg is the id of the view that declared.
+		//
+		// IT CARRIES NO GEOMETRY, DELIBERATELY. A payload with the rectangle in
+		// it would be a second channel for the same fact, reaching the consumer
+		// by a different path than WebUIGetDeclaredAreas and free to disagree
+		// with it - the listener that missed one event would hold a number the
+		// snapshot denies. So the pulse says only that something moved; the
+		// number comes from the one call that hands back a consistent picture.
+		//
+		// THE DECLARER'S ID IS IN strArg SO A LISTENER CAN IGNORE ITSELF. A mod
+		// event reaches every script registered for it, and this bridge does no
+		// routing, so "does not come back to whoever declared" can only be
+		// honoured at the receiving end. One string compare does it.
+		//
+		// AND HEARING IT IS OPTIONAL. A consumer that never registers keeps
+		// working by reading on its own tick; the pulse spares it the polling, it
+		// does not gate its right to the screen. A third-party mod that knows
+		// nothing about this event still declares, still appears, and is still
+		// avoided by everyone who does listen.
+		constexpr const char* kAreaChangedEvent = "LodestoneWebUIAreaChanged";
 
 		// --- Focus ---------------------------------------------------------------
 
@@ -1299,6 +1378,222 @@ namespace Lodestone::Core::WebUIBridge
 			}
 		}
 
+		// --- Natives added in 1.32.0 ---------------------------------------------
+
+		// The largest magnitude a declared coordinate may carry, in percent.
+		//
+		// Generous on purpose - a panel may legitimately sit partly off screen,
+		// so this is not a 0..100 clamp - but finite, because FormatPercent below
+		// converts through a 64-bit integer and an absurd float would overflow
+		// it. Nothing a page can mean by "where I am" comes near this.
+		constexpr float kAreaMaxMagnitude = 1.0e6f;
+
+		// A percent value as "12.50", built by hand.
+		//
+		// NOT snprintf("%.2f"), AND THIS IS NOT STYLE. That honours the C
+		// locale's decimal point, so on a machine running a locale that writes
+		// 12,50 the page would receive a string whose parseFloat stops at the
+		// comma and reads 12 instead of 12.5 - silently, correctly by its own
+		// rules, and only for some players. Building the digits by hand has no
+		// locale to get wrong.
+		std::string FormatPercent(float a_value)
+		{
+			const bool      negative   = a_value < 0.0f;
+			const double    magnitude  = static_cast<double>(negative ? -a_value : a_value);
+			const long long hundredths = static_cast<long long>(magnitude * 100.0 + 0.5);
+
+			std::string out = std::to_string(hundredths / 100);
+			out += '.';
+			out += static_cast<char>('0' + (hundredths % 100) / 10);
+			out += static_cast<char>('0' + (hundredths % 100) % 10);
+
+			return negative ? ("-" + out) : out;
+		}
+
+		// Lodestone.WebUIDeclareArea(String, Float, Float, Float, Float, Int) -> Bool
+		//
+		// A view's owner states the screen area that view occupies, in percent of
+		// screen, anchored to one of the nine grid points.
+		//
+		// YOU DECLARE YOUR OWN. The bridge cannot tell who is calling - a Papyrus
+		// global native carries no identity, and WebUICreateView took two strings
+		// and no Form, so there is no plugin to derive an owner from. That makes
+		// "only the owner may declare" unenforceable here rather than optional:
+		// passing somebody else's view id is a bug in the caller, and the damage
+		// is that the other mod gets avoided at a rectangle it never claimed.
+		//
+		// NOT A CONTROL SURFACE, exactly as the enumeration above is not. Nothing
+		// here moves, resizes or hides any view, the caller's own included.
+		// Declaring is bookkeeping; the pixels still come from CSS in the page.
+		//
+		// REDECLARING IS THE CONSUMER'S DUTY. This stores what it was told, and
+		// the page can move without telling it. A stale declaration is not an
+		// error the bridge can detect.
+		//
+		// Returns False for an unknown view, an empty id, an id containing the
+		// row separator, a non-finite or absurd number, or an anchor outside
+		// 0..8. A declaration identical to the one already held succeeds and
+		// pulses nothing.
+		bool WebUIDeclareArea(RE::StaticFunctionTag*, RE::BSFixedString a_viewId, float a_x, float a_y,
+			float a_width, float a_height, std::int32_t a_anchor)
+		{
+			try {
+				const std::string viewId = ToStd(a_viewId);
+				if (viewId.empty()) {
+					spdlog::error("WebUIBridge: WebUIDeclareArea called with an empty view id.");
+					return false;
+				}
+
+				// THE SEPARATOR IS REFUSED RATHER THAN ESCAPED. A view id holding
+				// '|' would produce a row of WebUIGetDeclaredAreas that no page
+				// can split back apart, and it would break the OTHER rows in the
+				// same array rather than only its own. Failing the declaration
+				// tells the author now; escaping would hand every consumer a
+				// quoting rule to implement.
+				if (viewId.find('|') != std::string::npos) {
+					spdlog::error("WebUIBridge: WebUIDeclareArea refused view id '{}' - a view id "
+								  "cannot contain '|', which separates the fields of "
+								  "WebUIGetDeclaredAreas.",
+						viewId);
+					return false;
+				}
+
+				const float values[4] = { a_x, a_y, a_width, a_height };
+				for (const float value : values) {
+					if (!std::isfinite(value) || value > kAreaMaxMagnitude ||
+						value < -kAreaMaxMagnitude) {
+						spdlog::error("WebUIBridge: WebUIDeclareArea refused a number that is not a "
+									  "usable percent, for view '{}'.",
+							viewId);
+						return false;
+					}
+				}
+
+				if (a_anchor < kAnchorTopLeft || a_anchor > kAnchorBottomRight) {
+					spdlog::error("WebUIBridge: WebUIDeclareArea refused anchor {} for view '{}' - "
+								  "the grid is 0 to 8.",
+						a_anchor, viewId);
+					return false;
+				}
+
+				bool changed = false;
+				{
+					std::scoped_lock lock(g_mutex);
+
+					const auto it = g_views.find(viewId);
+					if (it == g_views.end()) {
+						spdlog::error("WebUIBridge: WebUIDeclareArea asked about unknown view '{}'.",
+							viewId);
+						return false;
+					}
+
+					ViewRecord& record = it->second;
+					changed            = record.areaX != a_x || record.areaY != a_y ||
+							  record.areaWidth != a_width || record.areaHeight != a_height ||
+							  record.anchor != a_anchor;
+
+					record.areaX      = a_x;
+					record.areaY      = a_y;
+					record.areaWidth  = a_width;
+					record.areaHeight = a_height;
+					record.anchor     = a_anchor;
+				}
+
+				// A DECLARATION THAT CHANGES NOTHING PULSES NOTHING, and that is
+				// what keeps a consumer which redeclares on its own update timer
+				// from becoming a metronome every other panel dances to. It is
+				// also what lets the adjustment chain end: the view that holds its
+				// ground redeclares the rectangle it already had, and the silence
+				// there is the last step.
+				//
+				// Sent after the lock is released. SendModEvent only queues, so
+				// holding the lock would not deadlock, but a listener waking up
+				// and calling straight back into this module is exactly the shape
+				// that turns "would not" into "did, once, on somebody's machine".
+				if (changed) {
+					SendModEvent(kAreaChangedEvent, viewId);
+				}
+
+				return true;
+			} catch (...) {
+				spdlog::error("WebUIBridge: WebUIDeclareArea threw.");
+				return false;
+			}
+		}
+
+		// Lodestone.WebUIGetDeclaredAreas() -> String[]
+		//
+		// Every VISIBLE view that has declared an area, one row each:
+		//
+		//     viewId|x|y|width|height|anchor
+		//
+		// Percent with two decimals, anchor 0..8. Sorted by id, and a strict
+		// subsequence of WebUIGetVisibleViewIds - same predicate, same order, so
+		// the two can never disagree about who is on screen.
+		//
+		// ONE CALL, FOR THE REASON THE ENUMERATION GIVES: a count plus N lookups
+		// takes the lock N+1 times, and a view declared or destroyed between two
+		// of them shifts everything after it. One call under one lock is a picture
+		// that cannot contradict itself.
+		//
+		// THE ID TRAVELS IN THE ROW, so nothing has to be paired by position
+		// against a second array. That was the alternative and it is worse: two
+		// arrays are two calls, or one call and a promise that the caller lines
+		// them up correctly.
+		//
+		// A VIEW THAT NEVER DECLARED IS ABSENT; a view that declared zeroes is
+		// present with zeroes. Those are different answers - "not playing" and
+		// "playing, and I take no room" - and a caller that reads absence as a
+		// zero rectangle will draw on top of a panel that simply has not spoken
+		// yet.
+		//
+		// Cannot fail. An empty array means nobody visible has declared, which is
+		// also the answer with no backend installed.
+		std::vector<std::string> WebUIGetDeclaredAreas(RE::StaticFunctionTag*)
+		{
+			try {
+				std::scoped_lock lock(g_mutex);
+
+				// Built from CollectViewIds rather than by walking the map,
+				// because the ordering promise has to be the SAME one and not an
+				// equivalent one. Sorting composed rows would not do it: with ids
+				// "Mod" and "ModA" the rows compare in the opposite order to the
+				// ids, because '|' sorts after most letters.
+				const std::vector<std::string> visible = CollectViewIds(true);
+
+				std::vector<std::string> out;
+				out.reserve(visible.size());
+
+				for (const std::string& viewId : visible) {
+					const auto it = g_views.find(viewId);
+					if (it == g_views.end() || it->second.areaX == kAreaUnset) {
+						continue;
+					}
+
+					const ViewRecord& record = it->second;
+
+					std::string row = viewId;
+					row += '|';
+					row += FormatPercent(record.areaX);
+					row += '|';
+					row += FormatPercent(record.areaY);
+					row += '|';
+					row += FormatPercent(record.areaWidth);
+					row += '|';
+					row += FormatPercent(record.areaHeight);
+					row += '|';
+					row += std::to_string(record.anchor);
+
+					out.push_back(std::move(row));
+				}
+
+				return out;
+			} catch (...) {
+				spdlog::error("WebUIBridge: WebUIGetDeclaredAreas threw.");
+				return {};
+			}
+		}
+
 		// --- Deprecated 1.17.x names ---------------------------------------------
 		//
 		// Thin forwarding, kept for the whole 1.18.x cycle so a .pex built against
@@ -1464,6 +1759,9 @@ namespace Lodestone::Core::WebUIBridge
 
 		a_vm->RegisterFunction("WebUIGetViewIds", "Lodestone", WebUIGetViewIds);
 		a_vm->RegisterFunction("WebUIGetVisibleViewIds", "Lodestone", WebUIGetVisibleViewIds);
+
+		a_vm->RegisterFunction("WebUIDeclareArea", "Lodestone", WebUIDeclareArea);
+		a_vm->RegisterFunction("WebUIGetDeclaredAreas", "Lodestone", WebUIGetDeclaredAreas);
 
 		// The 1.17.x surface, deprecated. Removed in 2.0.0, not before.
 		a_vm->RegisterFunction("PrismaAvailable", "Lodestone", PrismaAvailable);
