@@ -1733,42 +1733,96 @@ String[] Function WebUIGetDeclaredAreas() global native
 ; this event still declares, still appears in everyone's list, and is still
 ; avoided by everyone who does listen.
 ;
-; THE CONVENTION FOR WHO MOVES, AND IT IS A CONVENTION AND NOT A RULE. When two
-; declared areas overlap, the one that appears LATER in the sorted list keeps its
-; place, and the one that appears EARLIER adjusts. Nothing enforces this. A mod
-; that ignores it breaks nothing for anybody - it just goes back to being covered
-; and covering, which is where everyone was before this existed.
+; WHO MOVES: THE ONE THAT CAUSED THE CHANGE DOES NOT. When two declared areas
+; overlap, the view named in strArg keeps its place and the others are the ones
+; that adjust. That is the whole primary rule, and every listener computes it
+; from the same fact without anybody having agreed on anything beforehand.
 ;
-; WHY THERE HAS TO BE ONE. Two pages that both decide to yield will chase each
-; other; two that both decide to hold will sit on top of each other, which is the
-; defect this was built for. The tie has to break from a fact both sides read
-; identically, and on this bridge there is exactly one: position in the sorted
-; list. It is decided by the id you chose, which means alphabetical order, which
-; means a mod whose id sorts late holds its ground against mods that were there
-; first. That is stable and even-handed, and it is not intuitive - say it on your
-; mod page, not only here.
+; It is the physics you expect from a panel that grew: the one that grew pushes,
+; and the neighbours step aside. It is also why strArg carries the id - see the
+; paragraph above. Your own id in strArg means you are the cause, so you do
+; nothing; somebody else's means you may have to move.
 ;
-; AND THIS IS WHAT MAKES THE PULSE TERMINATE. Adjusting means declaring, and
-; declaring pulses, so a pulse can cause pulses. The chain ends because the
-; holder does not move:
+; AND IT IS NOT THE SAME THING AS ORDER IN THE LIST. Sorting answers a different
+; question - who comes first in the alphabet, not who moved. A convention built
+; on position hands the right to stay put to whichever id sorts the winning way
+; no matter which panel just grew, so the panel that grew is the one made to give
+; the space back. Worked example, with two real view ids: "IntelligenceMatters"
+; and "StrengthMatters". Alphabetically the first comes earlier. If the lower
+; panel is the StrengthMatters one and it is the one that grows, a rule of "the
+; earlier id holds" moves the wrong panel: it tells the one that grew to fit
+; itself back into the space it had. The cause is the fact to build on.
 ;
-;   A declares       -> pulse
-;   B hears, holds (B sorts later), redeclares nothing   -> silence
-;   A hears nothing further. Done.
+; ORDER IS THE SECOND-INSTANCE TIE-BREAK, for the cases the first rule cannot
+; answer: two views declaring in the same frame, so there are two causes, or an
+; overlap where nobody is the cause at all - both panels came up already on top
+; of each other and no pulse is what put them there. There is no physics to
+; follow in either, and position in the sorted list is the only fact both sides
+; read identically. THE ONE THAT APPEARS LATER IN THE SORTED LIST KEEPS ITS
+; PLACE; the earlier one adjusts. Arbitrary and stable, in that order of
+; importance - what a tie-break has to be, above all, is the same on both
+; sides.
 ;
-; or, the other way round:
+; SAY IT ON YOUR MOD PAGE, AND SAY IT ACCURATELY: this is the alphabet and
+; nothing else. It is NOT "whoever was there first", and it cannot be - the
+; bridge does not know which view existed first, and would have no answer that
+; survived two launches if it tried. A mod installed today whose id sorts late
+; will keep its place against panels that were on screen before it; a mod whose
+; id sorts early will step aside for them. Those are the same rule, not two.
 ;
-;   B declares       -> pulse
-;   A hears, yields, declares its new place              -> pulse
-;   B hears, holds, and declares nothing                 -> silence. Done.
+; And the worked example above is not an argument against this direction - it is
+; an argument against using the alphabet where there IS a cause to read. Watch
+; the coincidence in it, though: this direction happens to answer that example
+; correctly, because StrengthMatters sorts later than IntelligenceMatters. Turn
+; the example round, and let the upper panel be the one that grows - the
+; alphabet answers exactly the same way, and the right answer has changed. Being
+; right about one pair is what a tie-break looks like when it is standing in for
+; a rule it cannot do the job of.
 ;
-; Without the convention neither step is the last one and the pair shuffles for
-; as long as both are on screen. If you write your own policy instead, make sure
-; it has a step that does not declare.
+; IT DOES NOT MAKE POSITION A SLOT. Nobody stores an index - see the paragraph
+; on ordering above. The tie-break is recomputed from the list you have just
+; read, every time.
+;
+; NOTHING ENFORCES ANY OF THIS. A mod that ignores the convention breaks nothing
+; for anybody; it just goes back to being covered and covering, which is where
+; everyone was before this existed.
+;
+; THE SET YOU READ CAN ALREADY BE OUT OF DATE, AND THAT IS ALLOWED. Between the
+; call that hands it to you and the move you make because of it, somebody else
+; can declare. There is no lock here and there is not going to be one: a call
+; that reserved the screen for one page would be the control surface this bridge
+; refuses to be, and whoever held the reservation would be deciding for everyone
+; else.
+;
+; It converges instead of reserving. The declaration you missed sends its own
+; pulse, everybody reads again, and a wrong position lasts one round instead of
+; staying. Do not build something to make the reading final - build something
+; that survives the reading having been wrong, which is one more turn of the
+; loop you already have.
+;
+; WHAT MAKES THE CHAIN STOP, AND IT IS NOT THE TIE-BREAK BY ITSELF. Adjusting
+; means declaring, and declaring pulses, so a pulse can cause pulses:
+;
+;   A grows and declares                          -> pulse, strArg = A
+;   B hears it, overlaps A, and A is the cause,
+;     so B is the one that moves. B declares      -> pulse, strArg = B
+;   A hears it, reads the set, and now overlaps
+;     nobody. Nothing to adjust, so it declares
+;     nothing                                     -> silence. Done.
+;
+; The last step is "no overlap, so no declaration". THAT is the step that ends
+; it - a consumer that redeclares on every pulse it hears, whether or not it
+; overlaps anything, never reaches it, and the bridge cannot save it: silence on
+; an unchanged declaration does not help a page that really does move each time.
+;
+; So keep two things on your side. Declare only when you have something new to
+; say, and CAP THE ROUNDS you will do in one frame - after the cap, read, place
+; yourself once, and stop until the next frame. One badly written page can
+; otherwise take every other panel around the loop with it.
 ;
 ; THE BRIDGE DOES NOT ARBITRATE ANY OF THIS. It stores what you tell it, hands
-; back the set, and says out loud which way the convention falls. Nobody is moved
-; by anything but their own code.
+; back the set, names the cause in the pulse, and says out loud which way the
+; convention falls. Nobody is moved by anything but their own code.
 
 
 

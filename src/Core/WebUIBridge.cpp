@@ -437,10 +437,15 @@ namespace Lodestone::Core::WebUIBridge
 		// snapshot denies. So the pulse says only that something moved; the
 		// number comes from the one call that hands back a consistent picture.
 		//
-		// THE DECLARER'S ID IS IN strArg SO A LISTENER CAN IGNORE ITSELF. A mod
-		// event reaches every script registered for it, and this bridge does no
-		// routing, so "does not come back to whoever declared" can only be
-		// honoured at the receiving end. One string compare does it.
+		// THE DECLARER'S ID IS IN strArg, AND IT DOES TWO JOBS. The small one: a
+		// mod event reaches every script registered for it, this bridge does no
+		// routing, so "does not come back to whoever declared" can only be honoured
+		// at the receiving end, and one string compare does it. The large one: it
+		// names the view that CAUSED the change, which is what the convention in
+		// Lodestone.psc is computed from - the cause keeps its place and the others
+		// adjust. Without the id in the payload that rule has no data to stand on
+		// and every listener is back to guessing from position in a sorted list,
+		// which answers who comes first in the alphabet and not who moved.
 		//
 		// AND HEARING IT IS OPTIONAL. A consumer that never registers keeps
 		// working by reading on its own tick; the pulse spares it the polling, it
@@ -1774,7 +1779,7 @@ namespace Lodestone::Core::WebUIBridge
 		a_vm->RegisterFunction("PrismaDestroy", "Lodestone", PrismaDestroy);
 		a_vm->RegisterFunction("PrismaRegisterListener", "Lodestone", PrismaRegisterListener);
 
-		spdlog::info("WebUIBridge: natives registered (27 - 18 current, 9 deprecated).");
+		spdlog::info("WebUIBridge: natives registered (29 - 20 current, 9 deprecated).");
 		return true;
 	}
 }
