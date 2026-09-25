@@ -114,8 +114,8 @@
 // HandleSKSEMessage stands them up at kPostLoadGame. With Knockout
 // Extensions loaded, or the call site redirected by another plugin, the
 // SetUnconscious hook is not installed and the knockdown is refused all
-// session. Decisions and the discarded alternatives: Docs/TESTPLAN-L-K1.md
-// in the private workspace.
+// session. Decisions and the discarded alternatives are recorded in the
+// private workspace.
 //
 // THE GET-UP HOOK ON ACTOR'S VTABLE IS PARKED - it could never fire for an
 // NPC, since every NPC is a Character with its own table. A counting-only

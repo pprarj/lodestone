@@ -1516,8 +1516,8 @@ namespace Lodestone::Core::Incapacitation
 		// has to carry a reason, which a Bool cannot, and changing the return
 		// type of a published native breaks every script compiled against it.
 		// The legacy four stay registered and unchanged. Decision D1 of the
-		// phase, with the discarded alternative, is in Docs/TESTPLAN-L-K1.md
-		// of the private workspace.
+		// phase, with the discarded alternative, is recorded in the private
+		// workspace.
 		//
 		// NO TIMER HERE (D2). The consumer holds the duration and calls
 		// KnockDownRelease; this module holds the actor until told.

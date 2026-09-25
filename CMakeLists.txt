@@ -214,10 +214,9 @@ endif()
 # Applied only to the plugin DLL: it is the distributed artifact. A test
 # executable never ships and nobody compares its hash.
 #
-# Measured in Soul Ledger D051 (2026-08): two clean builds of identical source
-# differed by 4 bytes out of 724992, every one of them timestamp. Campanha
-# 2026-09-25-brepro-nos-seis. Detail:
-# _Steward/Conhecimento/o-build-msvc-da-dll-nao-e-reproduzivel-sem-brepro.md
+# Measured (2026-08): two clean builds of identical source differed by 4 bytes
+# out of 724992, every one of them timestamp. The measurement and the reasoning
+# behind this flag are recorded in the private workspace.
 # ---------------------------------------------------------------------------
 if(MSVC)
     target_link_options(${PROJECT_NAME} PRIVATE "/Brepro")

@@ -36,7 +36,7 @@
 // the assignment is queued through SKSE::GetTaskInterface(), the same pattern
 // DetectionRead uses (DetectionRead.cpp). Queuing does not cost a frame - the
 // task queue is drained in a loop, and a task added during that drain runs in
-// the same pass (_Steward\Conhecimento\addtask-nao-adia-para-o-frame-seguinte.md)
+// the same pass - measured, and recorded in the private workspace
 // - but it does mean the native returns before the write has landed. The Bool
 // these two natives return means "accepted", not "written": True is only a
 // promise that the task was queued, not a confirmation that the field changed.

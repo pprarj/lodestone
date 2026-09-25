@@ -297,8 +297,8 @@ namespace Lodestone::Core::WebUIBridge
 			// moves without saying so. That is a real cost and it was weighed:
 			// the only other way to learn the rectangle is to ask the backend,
 			// which means the main-thread queue, and a native cannot wait on a
-			// queued answer without blocking the VM against the game thread. The
-			// L-U9 TESTPLAN wrote both paths down before either was built.
+			// queued answer without blocking the VM against the game thread. Both
+			// paths were written down and weighed before either was built.
 			//
 			// So the contract says declaration, everywhere it is mentioned, and
 			// the duty to redeclare after moving is the consumer's. A consumer
@@ -547,9 +547,9 @@ namespace Lodestone::Core::WebUIBridge
 		// that cannot do that, because an overlay panel does not pause Skyrim -
 		// being unpaused is the entire point of one.
 		//
-		// THAT REASONING IS AN ARGUMENT, NOT A MEASUREMENT, and the TESTPLAN
-		// carries it as an item: open the panel with focus and confirm no
-		// release line appears.
+		// THAT REASONING IS AN ARGUMENT, NOT A MEASUREMENT, and it is carried as
+		// an open test item: open the panel with focus and confirm no release
+		// line appears.
 		class MenuWatch : public RE::BSTEventSink<RE::MenuOpenCloseEvent>
 		{
 		public:
