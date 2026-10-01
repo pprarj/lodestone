@@ -431,12 +431,34 @@ String[] Function GetSpellNames(Spell[] akSpells) global native
 ; WRITE THE KEY THE WAY THE FILE HOLDS IT, PLACEHOLDERS INCLUDED. The key goes to
 ; the table verbatim. A file line of
 ;
-;   $IM_Learned{}{}<TAB>You have learned {} at {} tier.
+;   $MyMod_Learned{}{}<TAB>You have learned {} at {} tier.
 ;
-; is asked for as "$IM_Learned{}{}", and the two values go in asArgs, in order.
+; is asked for as "$MyMod_Learned{}{}", and the two values go in asArgs, in order.
 ; They are substituted RIGHT TO LEFT into the "{}" tokens of the result, which is
 ; the same rule the rest of the ecosystem uses, so a file written for MCM Helper
 ; works here unchanged.
+;
+; THE BRACES ARE NOT MANDATORY, and the example above is only one shape a key can
+; take. A line held as "$MyMod_Ready", with no braces and no arguments, resolves
+; exactly the same way - measured in phase L-T2. The rule is to match your file,
+; not to add braces to it.
+;
+; COUNT MISMATCH DOES NOT FAIL - IT CHANGES WHICH VALUE THE PLAYER READS. The two
+; sides are not symmetric, and the dangerous one has no symptom at all. Both
+; measured in phase L-T2:
+;
+;   MORE braces than arguments - the leftover "{}" stays visible in the result.
+;   It is on screen, so you find it.
+;
+;   MORE arguments than braces - substitution runs right to left, so the LAST
+;   argument lands in the token and the earlier ones are dropped. The call reports
+;   success, nothing is logged, and the text simply shows a different field than
+;   you meant. Add an argument without adding its "{}" to the table and a label
+;   that read the spell name starts reading the tier instead.
+;
+; So the number of "{}" in the key and the length of asArgs are one contract, and
+; the table file holds half of it. Changing one side alone is a silent change of
+; meaning, not an error anyone will tell you about.
 ;
 ; YOUR VALUES ARE NOT PARSED. A value containing '{' or '}' - and a spell name
 ; from a third-party patch may well contain anything - is inserted literally and
@@ -479,12 +501,13 @@ String[] Function GetSpellNames(Spell[] akSpells) global native
 ; one you get. Build keys from literals shaped like keys - the '$' and an
 ; uppercase prefix are already unusual enough - and do not lowercase them.
 ;
-; WHAT IS NOT MEASURED, and used to be stated here as fact: whether the engine's
-; own lookup is case sensitive. The old text said "$im_learned" will not find
-; "$IM_Learned". The probe built to check that could not: the pool rewrote the
-; key to the uppercase spelling before the lookup ever saw it, and the lookup then
-; SUCCEEDED. Treat the lookup's case sensitivity as unknown, and note that the
-; rewrite above is what makes it hard to find out.
+; WHAT IS NOT MEASURED: whether the engine's own lookup is case sensitive. The
+; obvious probe - ask for a lowercase spelling of a key the file holds in upper
+; case - cannot answer it. One was built in phase L-T2 and the pool rewrote the
+; key to the uppercase spelling before the lookup ever saw it, so the lookup
+; SUCCEEDED and said nothing at all about its own case rules. Treat it as
+; unknown, and note that the rewrite described above is what makes it hard to
+; find out.
 
 ; The translated text for asKey, with asArgs substituted into its placeholders.
 ;
@@ -496,8 +519,8 @@ String[] Function GetSpellNames(Spell[] akSpells) global native
 ;
 ; A KEY WITH NO PLACEHOLDERS: CALL TranslatePlain, and do NOT pass None here.
 ; None is accepted and returns the right text, but it damages the CALLER - see
-; TranslatePlain below. THIS COMMENT USED TO SAY THE OPPOSITE, and it was wrong;
-; corrected from measurement in phase L-T2, 2026-10-01.
+; TranslatePlain below, where the mechanism is written out. Measured in phase
+; L-T2, 2026-10-01.
 String Function Translate(String asKey, String[] asArgs) global native
 
 ; The translated text for asKey, for a key with NO placeholders.
