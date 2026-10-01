@@ -416,6 +416,142 @@ Int[] Function GetSpellSkillLevels(Spell[] akSpells) global native
 ; The display name of each spell, "" when it has none.
 String[] Function GetSpellNames(Spell[] akSpells) global native
 
+; --- Translation keys (added in DLL 1.33.0) ---------------------------------
+;
+; Requires Lodestone.GetVersion() >= 1033000 (1.33.0).
+;
+; Resolves a '$' translation key to its translated text and hands it back as a
+; String you can put in a message, a notification or a UI payload.
+;
+; THE TABLE IS ONE FOR THE WHOLE LOAD ORDER. You can read a key that belongs to
+; ANY active plugin, not only your own - no registration, no permission, nothing
+; to ask. Measured in game: a third-party key resolved before this plugin had
+; loaded a single key of its own.
+;
+; WRITE THE KEY THE WAY THE FILE HOLDS IT, PLACEHOLDERS INCLUDED. The key goes to
+; the table verbatim. A file line of
+;
+;   $IM_Learned{}{}<TAB>You have learned {} at {} tier.
+;
+; is asked for as "$IM_Learned{}{}", and the two values go in asArgs, in order.
+; They are substituted RIGHT TO LEFT into the "{}" tokens of the result, which is
+; the same rule the rest of the ecosystem uses, so a file written for MCM Helper
+; works here unchanged.
+;
+; YOUR VALUES ARE NOT PARSED. A value containing '{' or '}' - and a spell name
+; from a third-party patch may well contain anything - is inserted literally and
+; cannot break the substitution. This is a property of how the native is built,
+; not a convention you have to respect: the arguments never pass through the
+; brace parser at all.
+;
+; A VALUE IS NOT TRANSLATED. Text handed in asArgs reaches the result as it is,
+; even if it happens to begin with '$'. Translate the pieces yourself if you need
+; that, and pass the results.
+;
+; YOUR OWN FILE NEEDS NOTHING FROM YOU. The game loads
+; Interface\Translations\<plugin>_<LANGUAGE>.txt BY ACTIVE PLUGIN NAME - it does
+; not scan the folder - so if your mod has an .esp, your file is already loaded
+; before any of this runs. If your mod is a DLL with no plugin, nothing will ever
+; open its file and you have to parse it yourself from C++; measured the hard way
+; here, which is why Lodestone parses its own.
+;
+; THE TRANSLATOR DOES NOT EXIST EARLY. Before data load there is no table at all,
+; and every key - yours and everyone else's - comes back unresolved. Do not resolve
+; text in an OnInit that races the load; resolve when you are about to show it.
+;
+; CAPITALIZATION: the same warning as WebUICall applies, and MEASURED here in
+; phase L-T2 - a key you write is not necessarily the key the native receives.
+;
+; THE CASE OF A STRING LITERAL DOES NOT SURVIVE, and it is rewritten TWICE over,
+; by two different mechanisms. Both were measured on 2026-10-01:
+;
+;   the COMPILER, within one script: two literals differing only in case become
+;   ONE entry in the .pex string table. A probe passed "$lt2_plana" in a script
+;   that also held "$LT2_PLANA"; the lowercase spelling was absent from the
+;   compiled .pex, and the native received the uppercase one.
+;
+;   the GAME'S STRING POOL, ACROSS scripts: the same lowercase key, compiled into
+;   a .pex of its own that provably held no uppercase spelling, still arrived
+;   uppercase - interned by a different script earlier in the same session.
+;
+; So you cannot rely on the case you wrote, and you cannot test your own key's
+; case in isolation: whichever spelling some other script interned first is the
+; one you get. Build keys from literals shaped like keys - the '$' and an
+; uppercase prefix are already unusual enough - and do not lowercase them.
+;
+; WHAT IS NOT MEASURED, and used to be stated here as fact: whether the engine's
+; own lookup is case sensitive. The old text said "$im_learned" will not find
+; "$IM_Learned". The probe built to check that could not: the pool rewrote the
+; key to the uppercase spelling before the lookup ever saw it, and the lookup then
+; SUCCEEDED. Treat the lookup's case sensitivity as unknown, and note that the
+; rewrite above is what makes it hard to find out.
+
+; The translated text for asKey, with asArgs substituted into its placeholders.
+;
+; ON FAILURE THIS RETURNS asKey UNCHANGED, never "". A "$MY_KEY" on screen is a
+; bug someone reports; a blank line is a bug nobody notices. Use
+; GetTranslationStatus to find out which failure it was - the return value alone
+; cannot tell you, and a key whose translation is DELIBERATELY EMPTY returns "",
+; which is success and not failure.
+;
+; A KEY WITH NO PLACEHOLDERS: CALL TranslatePlain, and do NOT pass None here.
+; None is accepted and returns the right text, but it damages the CALLER - see
+; TranslatePlain below. THIS COMMENT USED TO SAY THE OPPOSITE, and it was wrong;
+; corrected from measurement in phase L-T2, 2026-10-01.
+String Function Translate(String asKey, String[] asArgs) global native
+
+; The translated text for asKey, for a key with NO placeholders.
+;
+; USE THIS INSTEAD OF Translate(asKey, None). Papyrus cannot build an empty array
+; - "new String[0]" does not compile - so None was the only way to call Translate
+; with no arguments, and None is what breaks you: the Papyrus compiler routes EVERY
+; array creation in a function through one temporary, and passing None for a
+; String[] argument emits a CAST on that temporary. After that, every
+; "new String[n]" in that function FAILS, the variable stays None, and arrays reach
+; natives EMPTY - which looks exactly like "no arguments", so nothing reports it.
+;
+; MEASURED in phase L-T2, 2026-10-01: seven broken creations in one function,
+; identical across two consecutive game runs, isolated in the compiler's own
+; assembly against a control differing by a single line. Passing None also logs
+; two Papyrus warnings per call.
+;
+; Otherwise identical to Translate with no arguments, failure behaviour included:
+; a "{}" left standing in the value stays visible.
+String Function TranslatePlain(String asKey) global native
+
+; Why a key did or did not resolve, without the text:
+;
+;   0  found, and its text is not empty
+;   1  asKey does not start with '$' - it is not a key
+;   2  the translator does not exist yet - too early, ask again later
+;   3  not in the table - no plugin in this load order provides it
+;   4  in the table, and its value is deliberately empty
+;
+; 2 AND 3 ARE DIFFERENT ANSWERS AND NEITHER IS "the string is missing". Treating
+; 2 as 3 reports a missing translation for a table that simply was not up yet.
+;
+; Stateless: it does the lookup again rather than remembering the last one. The
+; table is shared by every mod in the load order, so a remembered status would be
+; racing all of them.
+Int Function GetTranslationStatus(String asKey) global native
+
+; Convenience for the common case of one value. Not a native - it builds the
+; array and calls Translate, so it costs one extra Papyrus frame and nothing on
+; the DLL side. Use Translate directly in a loop.
+String Function TranslateOne(String asKey, String asArg) global
+	String[] args = new String[1]
+	args[0] = asArg
+	Return Translate(asKey, args)
+EndFunction
+
+; Convenience for two values, in the order they appear in the file.
+String Function TranslateTwo(String asKey, String asArg1, String asArg2) global
+	String[] args = new String[2]
+	args[0] = asArg1
+	args[1] = asArg2
+	Return Translate(asKey, args)
+EndFunction
+
 ; --- Detection scaling channel (added in DLL 1.9.0) -----------------------
 ;
 ; Scales a detection-related value you compute yourself, the same shape as the

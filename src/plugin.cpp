@@ -53,6 +53,7 @@
 #include "Core/Papyrus.h"
 #include "Core/Serialization.h"
 #include "Core/SpellTomes.h"
+#include "Core/Translation.h"
 #include "Core/WebUIBridge.h"
 #include "Version.h"
 
@@ -126,6 +127,15 @@ namespace
 			// framework's DLL is reliably loaded by this point, which is what
 			// its own consumers rely on.
 			Lodestone::Core::MenuPrompt::Install();
+
+			// Translation is not a hook either, and it is here for a reason the
+			// others do not share: this is the FIRST seam where the Scaleform
+			// translator exists at all - null at kPostLoad, kPostPostLoad and
+			// kInputLoaded, measured in game. It is also the seam at which SKSE
+			// has finished loading every translation file it is going to load, so
+			// parsing ours after this point adds to a finished table instead of
+			// racing it.
+			Lodestone::Core::Translation::Install();
 		}
 	}
 }

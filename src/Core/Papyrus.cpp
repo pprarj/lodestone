@@ -20,6 +20,7 @@
 #include "PluginInfo.h"
 #include "SpellRead.h"
 #include "SpellTomes.h"
+#include "Translation.h"
 #include "WebUIBridge.h"
 
 namespace Lodestone::Core::Papyrus
@@ -50,6 +51,7 @@ namespace Lodestone::Core::Papyrus
 		ok &= EffectDescription::RegisterFuncs(a_vm); // L-F2 - magic effect description
 		ok &= SpellRead::RegisterFuncs(a_vm);         // L-F3 - spell batch readers
 		ok &= MenuPrompt::RegisterFuncs(a_vm);        // L-U8 - on-screen player prompts
+		ok &= Translation::RegisterFuncs(a_vm);       // L-T2 - translation key resolution
 
 		if (ok) {
 			spdlog::info("Papyrus: all modules registered.");
