@@ -37,9 +37,9 @@
 //
 //   HOOK TARGET (VALIDATED IN GAME): the function CommonLibSSE-NG names
 //   BookMenu::OpenMenu_Impl, RELOCATION_ID(50122, 51053). The ID is not in the
-//   shipped headers - it was taken from the CommonLibSSE-NG source and confirmed
-//   by a log-only pass that settled the address and the eight-argument signature
-//   together. See BookFramework.cpp for that capture.
+//   shipped headers - it was taken from the CommonLibSSE-NG source. SE/AE use
+//   eight arguments; VR adds a ninth NiAVObject* that must be forwarded unchanged
+//   because the engine retains it and releases it when the menu closes.
 //
 //   Do NOT go looking for BookMenu::OpenBookMenu. It is declared in
 //   RE/B/BookMenu.h but has no implementation anywhere in the vendored
@@ -79,8 +79,7 @@ namespace Lodestone::Core::BookFramework
 	// exactly once - NOT idempotent.
 	//
 	// Call site: plugin.cpp, on SKSE::MessagingInterface::kDataLoaded. Requires the
-	// SKSE trampoline to be allocated first (SKSE::AllocTrampoline in
-	// SKSEPluginLoad), because this is a branch hook, not a vtable swap.
+	// native book-opening function to be available for a SafetyHook inline detour.
 	//
 	// Never throws. Every failure path is logged and swallowed, and leaves books at
 	// their vanilla text.
