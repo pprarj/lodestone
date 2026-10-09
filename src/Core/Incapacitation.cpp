@@ -9,6 +9,7 @@
 #include "Incapacitation.h"
 
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <functional>
 #include <limits>
@@ -74,10 +75,24 @@ namespace Lodestone::Core::Incapacitation
 
 			// How many times the frame hook has had to put the state back.
 			//
-			// Reads 0 in every log while that hook is parked. A zero here means
-			// nothing was counting, not that nothing happened - read it as
-			// absent rather than as a measurement.
+			// L-K2: counted again, and only on the knockdown path - the legacy
+			// path is not maintained, so there it still reads 0 and means
+			// nothing was counting.
 			std::uint32_t reasserts = 0;
+
+			// L-K2. When KnockDown dropped this actor, so the hold lines can
+			// say at what time each re-assert happened.
+			std::chrono::steady_clock::time_point downAt{};
+
+			// L-K2. Set once the frame hook has seen this actor already in
+			// kGetUp - the case the hold cannot cover - so it is logged once
+			// and not every frame.
+			bool missedLogged = false;
+
+			// L-K2. Set by KnockDownRelease before it reverts, so the frame
+			// hook stops holding an actor that is being stood up on purpose -
+			// the revert writes kGetUp while the actor is still in this set.
+			bool releasing = false;
 
 			// Whether KnockoutFall is the one that put this actor into
 			// kUnconcious, and therefore the one that owes it a way back.
@@ -119,9 +134,7 @@ namespace Lodestone::Core::Incapacitation
 		// touching the lock, which is the difference between a mutex every frame
 		// for the whole session and a mutex every frame only during a knockout.
 		//
-		// That hook is parked, so nothing reads this today. It is kept written
-		// and correct so the hook can be uncommented without also having to
-		// rebuild its guard.
+		// L-K2: the hook is back, and this is what it reads first.
 		std::atomic<bool> g_anyFallen{ false };
 
 		// Call under g_registryLock, after any change to g_fallen.
@@ -1290,22 +1303,40 @@ namespace Lodestone::Core::Incapacitation
 				try {
 					const auto formID = a_actor->GetFormID();
 
+					bool viaKnockDown = false;
 					{
 						std::lock_guard lock(g_registryLock);
-						if (!g_fallen.contains(formID)) {
+						const auto      it = g_fallen.find(formID);
+						if (it == g_fallen.end()) {
 							return;
 						}
+						viaKnockDown = it->second.viaKnockDown;
 					}
 
 					if (a_actor->IsDead()) {
 						return;
 					}
 
+					// L-K2: AN ACTOR THAT IS ALREADY STANDING IS NOT STOOD UP
+					// AGAIN. In the consumer's runs the engine had the actor
+					// back on its feet seconds before the release, and the
+					// release then wrote kGetUp and nudged it anyway - a recoil
+					// on an upright body, which is the "falls again" seen there
+					// (inferred, not isolated). Down means a down knock state
+					// or a body still in ragdoll; either one keeps the sequence
+					// below exactly as it was. Knockdown path only - the legacy
+					// path stays the control.
+					const auto knockBefore = ReadKnockState(a_actor);
+					const bool standing =
+						viaKnockDown && !IsDownKnockState(knockBefore) && !a_actor->IsInRagdollState();
+
 					// kGetUp rather than kNormal: the actor is not standing yet,
 					// it is being told to stand. kNormal would claim the
 					// transition already happened.
 					auto* state = a_actor->AsActorState();
-					state->actorState1.knockState = RE::KNOCK_STATE_ENUM::kGetUp;
+					if (!standing) {
+						state->actorState1.knockState = RE::KNOCK_STATE_ENUM::kGetUp;
+					}
 					state->DoSetSitSleepState(RE::SIT_SLEEP_STATE::kNormal);
 
 					// The same nudge as the way down. The reference
@@ -1313,7 +1344,7 @@ namespace Lodestone::Core::Incapacitation
 					// point is the same on both: it is not a push, it is what
 					// drives the physics transition.
 					if (auto* process = a_actor->GetActorRuntimeData().currentProcess;
-						process && a_actor->Is3DLoaded()) {
+						!standing && process && a_actor->Is3DLoaded()) {
 						process->KnockExplosion(a_actor, a_actor->GetPosition(), kFallNudge);
 					}
 
@@ -1322,8 +1353,11 @@ namespace Lodestone::Core::Incapacitation
 					a_actor->EvaluatePackage(true, true);
 
 					spdlog::info("Incapacitation: [inside] reverted actor (0x{:08X}) from inside the handler - "
-								 "knock {}, sit/sleep {}, life {}, 3D resynced and package re-evaluated.",
-						formID, static_cast<std::uint32_t>(ReadKnockState(a_actor)),
+								 "knock {} before, {}; now knock {}, sit/sleep {}, life {}, 3D resynced and "
+								 "package re-evaluated.",
+						formID, static_cast<std::uint32_t>(knockBefore),
+						standing ? "already standing, no get-up and no nudge" : "down, get-up and nudge",
+						static_cast<std::uint32_t>(ReadKnockState(a_actor)),
 						static_cast<std::uint32_t>(ReadSitSleepState(a_actor)),
 						static_cast<std::uint32_t>(ReadLifeState(a_actor)));
 				} catch (...) {
@@ -1404,101 +1438,166 @@ namespace Lodestone::Core::Incapacitation
 		// -------------------------------------------------------------------
 
 		// -------------------------------------------------------------------
-		// PARKED - 2026-08-17. Commented out rather than deleted.
+		// L-K2 - BACK, AND RESTRICTED. The 2026-08-17 version is described
+		// below as it was parked; what changed is what it reacts to.
 		//
-		// The knockout work of phase 14 is suspended by the author's decision,
-		// and this is kept as it stood so the next session inherits the code
-		// instead of a summary of it. It is not installed; the install block in
-		// Install() is parked alongside it.
+		// WHY IT CAME BACK. In the consumer's runs (Agility Matters, calling
+		// KnockDown from Papyrus) the state written inside the handler did
+		// not hold: 128 of 129 knockdowns had knock 2 at the first animation
+		// event, and the actor went 2 -> 1 -> 5 -> 6 and stood at about
+		// 7.4 s, with knock 5 (kQueued) reached about 1.4 s after the call
+		// and GetUpStart about 0.5 s after that. The phase's own probe, which
+		// called KnockDown from an SKSE task on a placed NPC, held knock 7 in
+		// 13 of 13. Which difference decides it - the calling context or the
+		// target - is not isolated, and the fix must not depend on it.
 		//
-		// WHAT IT MEASURED, AND WHY IT IS OFF. It ran, and the number it
-		// reported refuted the premise it was built on:
+		// WHAT IT DOES NOW, AND ONLY THIS. For an actor that came in through
+		// KnockDown and had the sequence applied, when the knock state reads
+		// kQueued it writes kDown and kIsSleeping back. kQueued is the point
+		// where the recoil has finished with the body - the actor is on the
+		// ground, ragdolled, waiting for its get-up - which is the "both,
+		// seconds apart" data point of the table above: impulse first, state
+		// after the body settled. It is also the state the probe's 13 holds
+		// were in: knock 7, life 3, ragdoll true.
+		//
+		// WHAT IT DOES NOT TOUCH, AND WHY:
+		//   - kExplodeLeadIn and kExplode: the body is still moving, and the
+		//     state written while it moves froze an actor mid-air.
+		//   - kGetUp and kNormal: the actor is already standing or on the way
+		//     up, and writing kDown onto an upright actor is the August
+		//     symptom described below - a body flagged ragdoll that walks.
+		//     Reaching kGetUp without passing through kQueued in a frame this
+		//     hook saw is logged once, as a miss, and left alone.
+		//   - the legacy KnockoutFall path: unchanged from 1.30.0, still the
+		//     control.
+		//
+		// The writes happen outside g_registryLock: changing the sit/sleep
+		// state can raise animation events, and the observation sink takes
+		// that lock on the same thread.
+		//
+		// WHAT IT MEASURED IN AUGUST, AND WHY IT WAS OFF. It ran, and the
+		// number it reported refuted the premise it was built on:
 		//
 		//   KnockoutRecover ... knock 1 -> 6, 3 frame re-assert(s),
 		//                       blocked 0 get-up attempt(s), ragdoll false
 		//
 		// Three re-asserts across thirty-three seconds, where hundreds were
-		// expected. The state was never being taken away. The animation trace
-		// shows knockState holding at kDown for twenty-six unbroken seconds
-		// while the actor plays FootLeft and FootRight - upright, walking.
-		//
-		// So kDown does not hold a body on the ground. It is a label the engine
-		// reads, and writing it makes the engine treat an actor as ragdolled
-		// without the actor being down: IsInRagdollState came back true for that
-		// entire walking stretch, arrows passed through the target, and only a
-		// melee hit brought it back. That symptom belongs to the state write and
-		// predates this hook - parking this does not remove it.
-		//
-		// TWO FINDINGS THAT OUTLIVE THE ATTEMPT:
-		//   - the get-up blocker has never once fired. blocked 0, while
-		//     GetUpStart, GetUpEnd and GetUpExit all ran in the same window. It
-		//     is hooked on a function the real get-up does not go through.
-		//   - sitSleepState IS the state that gets taken away. It came back 0
-		//     after DoSetSitSleepState had returned true. This hook never put it
-		//     back, because its gate reads knockState, which never looked lost.
-		//     The door being guarded was not the one being opened.
+		// expected. The animation trace shows knockState holding at kDown for
+		// twenty-six unbroken seconds while the actor plays FootLeft and
+		// FootRight - upright, walking. So kDown does not hold a body on the
+		// ground; it is a label the engine reads, and writing it onto a
+		// standing actor makes the engine treat it as ragdolled without it
+		// being down (IsInRagdollState true while walking, arrows passing
+		// through). That is why this version only writes while the body is
+		// still on the ground. Its gate in August read "any down knock
+		// state", which let kQueued pass as already down - the door this
+		// version guards.
 		// -------------------------------------------------------------------
-		// struct PlayerUpdateHook
-		// {
-			// static void thunk(RE::Actor* a_this, float a_delta)
-			// {
-				// func(a_this, a_delta);
-		//
-				// if (!g_anyFallen.load(std::memory_order_relaxed)) {
-					// return;
-				// }
-		//
-				// try {
-					// Maintain();
-				// } catch (...) {
-					// // A throw escaping into the engine's frame loop is the worst
-					// // place in this plugin for one, and a knockout that stops
-					// // being maintained is a far smaller problem than that.
-					// spdlog::error("Incapacitation: the frame maintenance threw - swallowed.");
-				// }
-			// }
-		//
-			// static inline REL::Relocation<decltype(thunk)> func;
-		//
-		// private:
-			// static void Maintain()
-			// {
-				// std::lock_guard lock(g_registryLock);
-		//
-				// for (auto& [formID, state] : g_fallen) {
-					// const auto actor = state.handle.get();
-					// if (!actor) {
-						// continue;
-					// }
-		//
-					// if (actor->IsDead()) {
-						// continue;
-					// }
-		//
-					// auto* actorState = actor->AsActorState();
-					// if (IsDownKnockState(actorState->GetKnockState())) {
-						// continue;
-					// }
-		//
-					// // The engine took it away, so put it back. No impulse here -
-					// // the impulse is what starts the recoil that takes the state
-					// // away in the first place, and applying one every frame
-					// // would be the worst version of this idea.
-					// actorState->actorState1.knockState = RE::KNOCK_STATE_ENUM::kDown;
-					// actorState->DoSetSitSleepState(RE::SIT_SLEEP_STATE::kIsSleeping);
-		//
-					// ++state.reasserts;
-		//
-					// // Only the first one is written. This can fire many times a
-					// // second and the total is reported once, at recovery.
-					// if (state.reasserts == 1) {
-						// spdlog::info("Incapacitation: [frame] actor (0x{:08X}) lost the down state and had it "
-									//  "put back. Further re-asserts are counted, not logged.",
-							// formID);
-					// }
-				// }
-			// }
-		// };
+		struct PlayerUpdateHook
+		{
+			static void thunk(RE::Actor* a_this, float a_delta)
+			{
+				func(a_this, a_delta);
+
+				if (!g_anyFallen.load(std::memory_order_relaxed)) {
+					return;
+				}
+
+				try {
+					Maintain();
+				} catch (...) {
+					// A throw escaping into the engine's frame loop is the worst
+					// place in this plugin for one, and a knockout that stops
+					// being maintained is a far smaller problem than that.
+					spdlog::error("Incapacitation: the frame maintenance threw - swallowed.");
+				}
+			}
+
+			static inline REL::Relocation<decltype(thunk)> func;
+
+		private:
+			// Past this many lines per knockdown the re-asserts are counted
+			// and not logged; KnockDownRelease reports the total.
+			static constexpr std::uint32_t kMaxLoggedReasserts = 30;
+
+			static void Maintain()
+			{
+				std::vector<std::pair<RE::FormID, RE::ActorHandle>> held;
+				{
+					std::lock_guard lock(g_registryLock);
+					for (const auto& [formID, state] : g_fallen) {
+						if (state.viaKnockDown && state.applied && !state.releasing) {
+							held.emplace_back(formID, state.handle);
+						}
+					}
+				}
+
+				for (const auto& [formID, handle] : held) {
+					const auto actorPtr = handle.get();
+					auto*      actor = actorPtr.get();
+					if (!actor || actor->IsDead() || !actor->Is3DLoaded()) {
+						continue;
+					}
+
+					const auto knock = ReadKnockState(actor);
+					if (knock != RE::KNOCK_STATE_ENUM::kQueued && knock != RE::KNOCK_STATE_ENUM::kGetUp) {
+						continue;
+					}
+
+					if (knock == RE::KNOCK_STATE_ENUM::kGetUp) {
+						std::lock_guard lock(g_registryLock);
+						const auto      it = g_fallen.find(formID);
+						if (it != g_fallen.end() && !it->second.missedLogged) {
+							it->second.missedLogged = true;
+							spdlog::warn("Incapacitation: [hold] actor (0x{:08X}) reached knock 6 (get-up) at "
+										 "+{:.2f} s without a frame at knock 5 - not re-asserted, it is already "
+										 "on the way up. {} re-assert(s) before this.",
+								formID, SecondsSince(it->second.downAt), it->second.reasserts);
+						}
+						continue;
+					}
+
+					// Ragdoll and z read before the write, so the line says what
+					// the body looked like when it was put back.
+					const bool  ragdoll = actor->IsInRagdollState();
+					const float z = actor->GetPosition().z;
+
+					auto* actorState = actor->AsActorState();
+					actorState->actorState1.knockState = RE::KNOCK_STATE_ENUM::kDown;
+					const bool sitAccepted = actorState->DoSetSitSleepState(RE::SIT_SLEEP_STATE::kIsSleeping);
+
+					std::uint32_t count = 0;
+					double        at = 0.0;
+					{
+						std::lock_guard lock(g_registryLock);
+						const auto      it = g_fallen.find(formID);
+						if (it == g_fallen.end()) {
+							continue;
+						}
+						count = ++it->second.reasserts;
+						at = SecondsSince(it->second.downAt);
+					}
+
+					if (count <= kMaxLoggedReasserts) {
+						spdlog::info("Incapacitation: [hold] actor (0x{:08X}) re-assert {} at +{:.2f} s - knock 5 "
+									 "-> {}, sit/sleep {} (DoSetSitSleepState returned {}), life {}, z {:.1f}, "
+									 "ragdoll {}.",
+							formID, count, at, static_cast<std::uint32_t>(ReadKnockState(actor)),
+							static_cast<std::uint32_t>(ReadSitSleepState(actor)), sitAccepted,
+							static_cast<std::uint32_t>(ReadLifeState(actor)), z, ragdoll);
+					} else if (count == kMaxLoggedReasserts + 1) {
+						spdlog::info("Incapacitation: [hold] actor (0x{:08X}) - {} re-asserts logged, counting the "
+									 "rest; KnockDownRelease reports the total.",
+							formID, kMaxLoggedReasserts);
+					}
+				}
+			}
+
+			static double SecondsSince(std::chrono::steady_clock::time_point a_then)
+			{
+				return std::chrono::duration<double>(std::chrono::steady_clock::now() - a_then).count();
+			}
+		};
 
 		// -------------------------------------------------------------------
 		// L-K1 - the knockdown surface
@@ -1629,6 +1728,7 @@ namespace Lodestone::Core::Incapacitation
 				state.handle = a_actor->GetHandle();
 				state.viaKnockDown = true;
 				state.origin = ResolveOrigin(a_actor, a_source, originFrom);
+				state.downAt = std::chrono::steady_clock::now();
 				{
 					std::lock_guard lock(g_registryLock);
 					g_fallen.emplace(formID, state);
@@ -1703,6 +1803,7 @@ namespace Lodestone::Core::Incapacitation
 				if (it == g_fallen.end() || !it->second.viaKnockDown) {
 					return false;
 				}
+				it->second.releasing = true;
 			}
 
 			try {
@@ -1729,8 +1830,12 @@ namespace Lodestone::Core::Incapacitation
 				// handler only acts on actors it finds there.
 				SetUnconsciousHook::thunk(a_actor, false);
 
+				std::uint32_t reasserts = 0;
 				{
 					std::lock_guard lock(g_registryLock);
+					if (const auto it = g_fallen.find(formID); it != g_fallen.end()) {
+						reasserts = it->second.reasserts;
+					}
 					g_fallen.erase(formID);
 					RefreshFallenFlag();
 				}
@@ -1747,13 +1852,13 @@ namespace Lodestone::Core::Incapacitation
 				}
 
 				spdlog::info("Incapacitation: KnockDownRelease on actor (0x{:08X}) - before: knock {}, sit/sleep "
-							 "{}, life {}; after: knock {}, sit/sleep {}, life {} (forced {}); z {:.1f}, ragdoll {}. "
-							 "Wake event queued.",
+							 "{}, life {}; after: knock {}, sit/sleep {}, life {} (forced {}); z {:.1f}, ragdoll {}; "
+							 "{} hold re-assert(s). Wake event queued.",
 					formID, static_cast<std::uint32_t>(beforeKnock), static_cast<std::uint32_t>(beforeSit),
 					static_cast<std::uint32_t>(beforeLife), static_cast<std::uint32_t>(ReadKnockState(a_actor)),
 					static_cast<std::uint32_t>(ReadSitSleepState(a_actor)),
 					static_cast<std::uint32_t>(ReadLifeState(a_actor)), forcedAlive,
-					a_actor->GetPosition().z, a_actor->IsInRagdollState());
+					a_actor->GetPosition().z, a_actor->IsInRagdollState(), reasserts);
 
 				g_wokeReg.QueueEvent(a_actor);
 			} catch (...) {
@@ -2171,6 +2276,40 @@ namespace Lodestone::Core::Incapacitation
 		}
 	}
 
+	// L-K2. The hold on the knockdown path - see PlayerUpdateHook. Only
+	// called once the SetUnconscious hook is in, so a session where the
+	// knockdown is refused does not carry a per-frame hook for nothing. A
+	// failure here leaves KnockDown available and the fall unheld, which is
+	// what 1.33.3 did; the line says so.
+	static void InstallFrameMaintenance()
+	{
+		try {
+			// Same trap as every other virtual in this file: the index
+			// diverges and the library states both numbers itself, in
+			// src/RE/A/Actor.cpp:1748. PlayerCharacter does not override
+			// Update, so this catches the inherited Actor::Update - and
+			// because it goes through PlayerCharacter's vtable rather than
+			// Character's, it fires once per frame for the player rather than
+			// once per frame per actor.
+			REL::Relocation<std::uintptr_t> vtbl{ RE::VTABLE_PlayerCharacter[0] };
+			const std::size_t               idx = REL::Module::IsVR() ? 0x0AF : 0x0AD;
+
+			PlayerUpdateHook::func = vtbl.write_vfunc(idx, PlayerUpdateHook::thunk);
+
+			spdlog::info("Incapacitation: frame maintenance installed on the PlayerCharacter vtable "
+						 "(Update @0x{:X}, {} runtime). Idle until a knockdown is open; holds a knocked-down "
+						 "actor that reaches knock 5.",
+				idx, REL::Module::IsVR() ? "VR" : "SE/AE");
+		} catch (const std::exception& e) {
+			spdlog::error("Incapacitation: failed to install the frame maintenance: {} - a knockdown will "
+						  "not be held once the engine starts the get-up.",
+				e.what());
+		} catch (...) {
+			spdlog::error("Incapacitation: failed to install the frame maintenance (unknown exception) - a "
+						  "knockdown will not be held once the engine starts the get-up.");
+		}
+	}
+
 	void Install()
 	{
 		auto* holder = RE::ScriptEventSourceHolder::GetSingleton();
@@ -2215,33 +2354,8 @@ namespace Lodestone::Core::Incapacitation
 						//   "after a moment.");
 		// }
 
-		// PARKED - 2026-08-17, together with the hook it installs. See the note
-		// on PlayerUpdateHook for what it measured and why it is off.
-		// Uncommenting both halves is the whole of bringing it back.
-		// try {
-			// // Same shape as the get-up hook above, same trap: the index diverges
-			// // and the library states both numbers itself, in
-			// // src/RE/A/Actor.cpp:1748. PlayerCharacter does not override Update,
-			// // so this catches the inherited Actor::Update - and because it goes
-			// // through PlayerCharacter's vtable rather than Character's, it fires
-			// // once per frame for the player rather than once per frame per
-			// // actor.
-			// REL::Relocation<std::uintptr_t> vtbl{ RE::VTABLE_PlayerCharacter[0] };
-			// const std::size_t               idx = REL::Module::IsVR() ? 0x0AF : 0x0AD;
-		//
-			// PlayerUpdateHook::func = vtbl.write_vfunc(idx, PlayerUpdateHook::thunk);
-		//
-			// spdlog::info("Incapacitation: frame maintenance installed on the PlayerCharacter vtable "
-						//  "(Update @0x{:X}, {} runtime). Idle until a knockout is open.",
-				// idx, REL::Module::IsVR() ? "VR" : "SE/AE");
-		// } catch (const std::exception& e) {
-			// spdlog::error("Incapacitation: failed to install the frame maintenance: {} - a fall will not be "
-						//   "held once the engine takes the state back.",
-				// e.what());
-		// } catch (...) {
-			// spdlog::error("Incapacitation: failed to install the frame maintenance (unknown exception) - a "
-						//   "fall will not be held once the engine takes the state back.");
-		// }
+		// The frame maintenance (L-K2) is installed further down, once the
+		// knockdown is known to be available - it maintains nothing else.
 
 		// The SetUnconscious call-site proof. See the hook above for what this
 		// is for and why VR is excluded.
@@ -2323,6 +2437,8 @@ namespace Lodestone::Core::Incapacitation
 						 "else - and nothing happens to an actor KnockDown or KnockoutFall did not "
 						 "register. Knockdown available.",
 				target, callSite.address());
+
+			InstallFrameMaintenance();
 		} catch (const std::exception& e) {
 			spdlog::error("Incapacitation: failed to hook SetUnconscious: {} - the fall is unavailable.",
 				e.what());
