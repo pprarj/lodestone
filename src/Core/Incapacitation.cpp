@@ -14,6 +14,7 @@
 #include <functional>
 #include <limits>
 #include <mutex>
+#include <string>
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
@@ -93,6 +94,19 @@ namespace Lodestone::Core::Incapacitation
 			// hook stops holding an actor that is being stood up on purpose -
 			// the revert writes kGetUp while the actor is still in this set.
 			bool releasing = false;
+
+			// L-K3. The get-up events the graph hold kept from this actor's
+			// behaviour graph, and the name of the last one - the release sends
+			// that one back, so the graph is not left waiting for a signal this
+			// module swallowed.
+			std::uint32_t refusals = 0;
+			std::string   lastRefused;
+
+			// L-K3. Set when the graph itself announced a get-up for this actor
+			// (an animation event whose tag starts with "GetUp") before the
+			// release. Once it is set the body is on the way up, and the hold no
+			// longer writes kDown at knock 6 - that is the August symptom.
+			bool getUpSeen = false;
 
 			// Whether KnockoutFall is the one that put this actor into
 			// kUnconcious, and therefore the one that owes it a way back.
@@ -362,12 +376,22 @@ namespace Lodestone::Core::Incapacitation
 						a_event->tag.empty() ? std::string_view{} : std::string_view{ a_event->tag.c_str() });
 					const auto knockNow = static_cast<std::uint32_t>(ReadKnockState(actorForState));
 
+					// L-K3: the graph's own word that the body started up. Read
+					// off the tag alone, so a get-up that slips past the graph
+					// hold - an event name outside its set - still closes the
+					// door on writing kDown at knock 6.
+					const bool getUpTag = !a_event->tag.empty() && _strnicmp(a_event->tag.c_str(), "GetUp", 5) == 0;
+
 					bool report = false;
 					{
 						std::lock_guard lock(g_registryLock);
 						const auto it = g_fallen.find(formID);
 						if (it == g_fallen.end()) {
 							return RE::BSEventNotifyControl::kContinue;
+						}
+
+						if (getUpTag && !it->second.releasing) {
+							it->second.getUpSeen = true;
 						}
 
 						// Same event, same knock state as the line before it: the
@@ -1544,17 +1568,31 @@ namespace Lodestone::Core::Incapacitation
 						continue;
 					}
 
+					// L-K3 - THE SECOND DOOR. Knock 6 is held only when the graph
+					// hold refused at least one get-up event in this knockdown and
+					// the graph never announced one: the label says get-up, the
+					// body has not started. Any other 6 is left alone and logged
+					// once - an actor whose get-up got through is upright, and
+					// kDown on an upright body is the August symptom.
 					if (knock == RE::KNOCK_STATE_ENUM::kGetUp) {
 						std::lock_guard lock(g_registryLock);
 						const auto      it = g_fallen.find(formID);
-						if (it != g_fallen.end() && !it->second.missedLogged) {
-							it->second.missedLogged = true;
-							spdlog::warn("Incapacitation: [hold] actor (0x{:08X}) reached knock 6 (get-up) at "
-										 "+{:.2f} s without a frame at knock 5 - not re-asserted, it is already "
-										 "on the way up. {} re-assert(s) before this.",
-								formID, SecondsSince(it->second.downAt), it->second.reasserts);
+						if (it == g_fallen.end()) {
+							continue;
 						}
-						continue;
+						if (it->second.refusals > 0 && !it->second.getUpSeen) {
+							// Held - falls through to the write below.
+						} else {
+							if (!it->second.missedLogged) {
+								it->second.missedLogged = true;
+								spdlog::warn("Incapacitation: [hold] actor (0x{:08X}) reached knock 6 (get-up) at "
+											 "+{:.2f} s - {} re-assert(s), {} refusal(s): the get-up got through. "
+											 "Not re-asserted.",
+									formID, SecondsSince(it->second.downAt), it->second.reasserts,
+									it->second.refusals);
+							}
+							continue;
+						}
 					}
 
 					// Ragdoll and z read before the write, so the line says what
@@ -1579,10 +1617,12 @@ namespace Lodestone::Core::Incapacitation
 					}
 
 					if (count <= kMaxLoggedReasserts) {
-						spdlog::info("Incapacitation: [hold] actor (0x{:08X}) re-assert {} at +{:.2f} s - knock 5 "
-									 "-> {}, sit/sleep {} (DoSetSitSleepState returned {}), life {}, z {:.1f}, "
+						spdlog::info("Incapacitation: [hold] actor (0x{:08X}) re-assert {} at +{:.2f} s - knock {} "
+									 "-> {}{}, sit/sleep {} (DoSetSitSleepState returned {}), life {}, z {:.1f}, "
 									 "ragdoll {}.",
-							formID, count, at, static_cast<std::uint32_t>(ReadKnockState(actor)),
+							formID, count, at, static_cast<std::uint32_t>(knock),
+							static_cast<std::uint32_t>(ReadKnockState(actor)),
+							knock == RE::KNOCK_STATE_ENUM::kGetUp ? " (get-up refused)" : "",
 							static_cast<std::uint32_t>(ReadSitSleepState(actor)), sitAccepted,
 							static_cast<std::uint32_t>(ReadLifeState(actor)), z, ragdoll);
 					} else if (count == kMaxLoggedReasserts + 1) {
@@ -1596,6 +1636,116 @@ namespace Lodestone::Core::Incapacitation
 			static double SecondsSince(std::chrono::steady_clock::time_point a_then)
 			{
 				return std::chrono::duration<double>(std::chrono::steady_clock::now() - a_then).count();
+			}
+		};
+
+		// -------------------------------------------------------------------
+		// L-K3 - THE GRAPH HOLD
+		//
+		// WHY THE FRAME HOOK ALONE DID NOT HOLD. In the consumer's rounds of
+		// the 1.33.4 (32 of 32 knockdowns read line by line) the frame hook
+		// re-asserted kDown once at knock 5, and the actor went 7 -> 6 and
+		// started GetUpStart 0.16 to 0.49 s later - the same interval as with
+		// no hold at all. Rewriting the label did not delay the get-up by a
+		// frame: the get-up already queued runs on a clock that does not read
+		// knockState. The label is what the engine reports; the stand-up is a
+		// state machine in the behaviour graph.
+		//
+		// WHAT THIS DOES. For an actor down through KnockDown, sequence
+		// applied, not being released, the get-up events in the set below do
+		// not reach the behaviour graph, and the call returns false - what the
+		// graph returns when it does not take an event. Every other actor and
+		// every other event: the original, untouched. The release sends the
+		// last refused event back (KnockDownRelease), so the graph is not left
+		// waiting for a signal this module swallowed.
+		//
+		// The set is a reading of a third party's description, not of code -
+		// a mod that holds ragdolled actors by refusing these two events. On
+		// the 1.33.5 bench (40 knockdowns, two targets) only GetUpBegin ever
+		// entered the graph this way; GetUpStart stays in the set unmeasured,
+		// inert on every knockdown seen.
+		//
+		// THIS IS A SUPPRESSING HOOK, the exception CONVENTIONS.md allows:
+		//   1. Only the refusing path skips the original - an actor outside
+		//      the hold, or an event outside the set, calls it.
+		//   2. The effect cannot be undone afterwards: a graph that started a
+		//      get-up stands the body up, and putting it back down takes a
+		//      second impulse.
+		//   3. The skipped side effect is the whole event, which is the point.
+		//      What else the graph would do with it is not known here; the
+		//      scope bounds it - our actors, in the hold, and the release
+		//      replays it. PARTLY DISCHARGED, said rather than hidden.
+		//
+		// COST. This runs for every animation-graph notification of every NPC.
+		// With no knockdown open it is one relaxed load and the original.
+		//
+		// THE SLOT. IAnimationGraphManagerHolder is Character's fourth base,
+		// so its table is VTABLE_Character[3]; NotifyAnimationGraph is its
+		// entry 0x01 on every runtime (IAnimationGraphManagerHolder.h:26,
+		// plain virtual, no RelocateVirtual). The [3] is read off the order of
+		// the bases, not declared in the library.
+		// -------------------------------------------------------------------
+		struct GraphHoldHook
+		{
+			static bool thunk(RE::IAnimationGraphManagerHolder* a_this, const RE::BSFixedString& a_eventName)
+			{
+				if (!g_anyFallen.load(std::memory_order_relaxed)) {
+					return func(a_this, a_eventName);
+				}
+
+				bool refuse = false;
+				try {
+					const auto ref = static_cast<RE::TESObjectREFR*>(a_this);
+					const auto formID = ref->GetFormID();
+
+					std::uint32_t refusals = 0;
+					double        at = 0.0;
+					if (IsRefused(a_eventName)) {
+						std::lock_guard lock(g_registryLock);
+						if (const auto it = g_fallen.find(formID); it != g_fallen.end() && it->second.viaKnockDown &&
+																	it->second.applied && !it->second.releasing) {
+							refuse = true;
+							refusals = ++it->second.refusals;
+							it->second.lastRefused = a_eventName.c_str();
+							at = std::chrono::duration<double>(std::chrono::steady_clock::now() - it->second.downAt)
+							         .count();
+						}
+					}
+
+					if (refuse) {
+						if (refusals <= kMaxLoggedRefusals) {
+							spdlog::info("Incapacitation: [hold] actor (0x{:08X}) refused graph event '{}' at "
+										 "+{:.2f} s, knock {}.",
+								formID, a_eventName.c_str(), at,
+								static_cast<std::uint32_t>(ReadKnockState(static_cast<RE::Actor*>(ref))));
+						} else if (refusals == kMaxLoggedRefusals + 1) {
+							spdlog::info("Incapacitation: [hold] actor (0x{:08X}) - {} refusals logged, counting "
+										 "the rest; KnockDownRelease reports the total.",
+								formID, kMaxLoggedRefusals);
+						}
+					}
+				} catch (...) {
+					// The safe direction is always the original: an actor kept
+					// down because this threw has no way back.
+					refuse = false;
+					spdlog::error("Incapacitation: the graph hold threw - letting the event through.");
+				}
+
+				return refuse ? false : func(a_this, a_eventName);
+			}
+
+			static inline REL::Relocation<decltype(thunk)> func;
+
+		private:
+			static constexpr std::uint32_t kMaxLoggedRefusals = 30;
+
+			static bool IsRefused(const RE::BSFixedString& a_name)
+			{
+				if (a_name.empty()) {
+					return false;
+				}
+				const char* name = a_name.c_str();
+				return _stricmp(name, "GetUpBegin") == 0 || _stricmp(name, "GetUpStart") == 0;
 			}
 		};
 
@@ -1831,10 +1981,14 @@ namespace Lodestone::Core::Incapacitation
 				SetUnconsciousHook::thunk(a_actor, false);
 
 				std::uint32_t reasserts = 0;
+				std::uint32_t refusals = 0;
+				std::string   lastRefused;
 				{
 					std::lock_guard lock(g_registryLock);
 					if (const auto it = g_fallen.find(formID); it != g_fallen.end()) {
 						reasserts = it->second.reasserts;
+						refusals = it->second.refusals;
+						lastRefused = it->second.lastRefused;
 					}
 					g_fallen.erase(formID);
 					RefreshFallenFlag();
@@ -1842,6 +1996,19 @@ namespace Lodestone::Core::Incapacitation
 
 				a_actor->RemoveAnimationGraphEventSink(AnimationSink::GetSingleton());
 				a_actor->GetActorRuntimeData().boolFlags.reset(RE::Actor::BOOL_FLAGS::kDoNotShowOnStealthMeter);
+
+				// L-K3. The graph hold ate the get-up the engine sent; the
+				// graph may still be waiting for it. Sent back only when the
+				// actor was held down up to the release - an actor that got up
+				// anyway does not need a second one. Through the virtual, so it
+				// passes the graph hold (the actor is out of the set by now) the
+				// same way as any other event.
+				if (refusals > 0 && !lastRefused.empty() && IsDownKnockState(beforeKnock)) {
+					const bool taken = a_actor->NotifyAnimationGraph(RE::BSFixedString(lastRefused.c_str()));
+					spdlog::info("Incapacitation: [hold] actor (0x{:08X}) replayed '{}' to the graph at release - "
+								 "the graph returned {}.",
+						formID, lastRefused, taken);
+				}
 
 				// The engine's handler is what should have put the life state
 				// back. If it did not, this is the only place left that can.
@@ -1853,12 +2020,12 @@ namespace Lodestone::Core::Incapacitation
 
 				spdlog::info("Incapacitation: KnockDownRelease on actor (0x{:08X}) - before: knock {}, sit/sleep "
 							 "{}, life {}; after: knock {}, sit/sleep {}, life {} (forced {}); z {:.1f}, ragdoll {}; "
-							 "{} hold re-assert(s). Wake event queued.",
+							 "{} hold re-assert(s), {} graph refusal(s). Wake event queued.",
 					formID, static_cast<std::uint32_t>(beforeKnock), static_cast<std::uint32_t>(beforeSit),
 					static_cast<std::uint32_t>(beforeLife), static_cast<std::uint32_t>(ReadKnockState(a_actor)),
 					static_cast<std::uint32_t>(ReadSitSleepState(a_actor)),
 					static_cast<std::uint32_t>(ReadLifeState(a_actor)), forcedAlive,
-					a_actor->GetPosition().z, a_actor->IsInRagdollState(), reasserts);
+					a_actor->GetPosition().z, a_actor->IsInRagdollState(), reasserts, refusals);
 
 				g_wokeReg.QueueEvent(a_actor);
 			} catch (...) {
@@ -2310,6 +2477,33 @@ namespace Lodestone::Core::Incapacitation
 		}
 	}
 
+	// L-K3. The graph hold - see GraphHoldHook. Same place and same reasoning
+	// as the frame maintenance: only once the knockdown is available. A
+	// failure leaves the 1.33.4 behaviour - the frame hook alone - and the
+	// line says so.
+	static void InstallGraphHold()
+	{
+		try {
+			// Character's table, not Actor's: every NPC is a Character, and a
+			// table is one per class - the trap the parked get-up hook fell
+			// into. [3] is the IAnimationGraphManagerHolder base; 0x01 is the
+			// same on every runtime.
+			REL::Relocation<std::uintptr_t> vtbl{ RE::VTABLE_Character[3] };
+			GraphHoldHook::func = vtbl.write_vfunc(0x01, GraphHoldHook::thunk);
+
+			spdlog::info("Incapacitation: graph hold installed on the Character vtable "
+						 "(NotifyAnimationGraph @[3]+0x01). Refuses the get-up events of a knocked-down actor "
+						 "until KnockDownRelease; every other event and actor passes.");
+		} catch (const std::exception& e) {
+			spdlog::error("Incapacitation: failed to install the graph hold: {} - a knockdown is held by the "
+						  "frame maintenance alone.",
+				e.what());
+		} catch (...) {
+			spdlog::error("Incapacitation: failed to install the graph hold (unknown exception) - a knockdown is "
+						  "held by the frame maintenance alone.");
+		}
+	}
+
 	void Install()
 	{
 		auto* holder = RE::ScriptEventSourceHolder::GetSingleton();
@@ -2439,6 +2633,7 @@ namespace Lodestone::Core::Incapacitation
 				target, callSite.address());
 
 			InstallFrameMaintenance();
+			InstallGraphHold();
 		} catch (const std::exception& e) {
 			spdlog::error("Incapacitation: failed to hook SetUnconscious: {} - the fall is unavailable.",
 				e.what());
