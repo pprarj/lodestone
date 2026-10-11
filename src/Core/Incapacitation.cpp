@@ -2561,7 +2561,7 @@ namespace Lodestone::Core::Incapacitation
 		}
 
 		// L-K1, D4. Knockout Extensions and this module's knockdown hook the
-		// same path and are incompatible - the author's rule is that the
+		// same path and are incompatible - the design rule is that the
 		// player picks one. Checked here, at kDataLoaded, when every SKSE
 		// plugin is already loaded. With it present the hook is NOT installed:
 		// the knockdown is refused with a reason and the legacy fall arms

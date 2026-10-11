@@ -38,7 +38,7 @@ namespace Lodestone::Core::WebUIBridge
 		// MERIDIAN FIRST. The reasoning is not that it is better: it is under
 		// active maintenance, it needs no Media Keys Fix, and its focus is
 		// arbitrated rather than absent. Prisma has the installed base. The
-		// order is an opinion and the author may invert it; what it may not be
+		// order is an opinion and may be inverted; what it may not be
 		// is undefined, because then the answer would depend on load order.
 		constexpr std::array<IWebUIBackend* (*)(), 2> kBackendOrder = {
 			&WebUIBackends::MeridianUI,
@@ -1453,7 +1453,7 @@ namespace Lodestone::Core::WebUIBridge
 				// '|' would produce a row of WebUIGetDeclaredAreas that no page
 				// can split back apart, and it would break the OTHER rows in the
 				// same array rather than only its own. Failing the declaration
-				// tells the author now; escaping would hand every consumer a
+				// surfaces the mistake now; escaping would hand every consumer a
 				// quoting rule to implement.
 				if (viewId.find('|') != std::string::npos) {
 					spdlog::error("WebUIBridge: WebUIDeclareArea refused view id '{}' - a view id "

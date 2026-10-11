@@ -204,7 +204,7 @@ namespace Lodestone::Core
 			// That failure is invisible from the game. The page calls
 			// window.<fn> and nothing happens - no error, no log line, and the
 			// consumer's inbound channel is simply dead. It was found by
-			// reasoning from a position reset the author reported on
+			// reasoning from a position reset reported on
 			// 2026-09-07, not by anything failing loudly.
 			std::vector<std::string> aliases;
 

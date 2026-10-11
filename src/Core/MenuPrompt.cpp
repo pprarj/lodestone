@@ -104,7 +104,7 @@ namespace Lodestone::Core::MenuPrompt
 		// The list size the player last dragged to, in pixels. Zero until the
 		// player resizes one. Shared by every list prompt from every mod, and
 		// kept for this run of the game only - nothing is written to disk, by
-		// the author's decision. Guarded by g_lock.
+		// design. Guarded by g_lock.
 		float g_listWidth{ 0.0f };
 		float g_listHeight{ 0.0f };
 		std::atomic<bool>       g_busy{ false };

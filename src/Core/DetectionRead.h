@@ -55,8 +55,8 @@
 // module has no way to know that two native calls form one logical pair -
 // nothing in the call tells it, and inventing a boundary (a time window, a
 // latch) would guess. Closing it properly means one native that returns both
-// numbers, which is new permanent public surface and a decision for the
-// author rather than a quiet fix. Until then the contract is the honest one:
+// numbers, which is new permanent public surface and a design
+// decision rather than a quiet fix. Until then the contract is the honest one:
 // treat a level and a count read back to back as two samples taken close
 // together, not as one atomic reading.
 //
