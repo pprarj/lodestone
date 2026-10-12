@@ -157,6 +157,94 @@ namespace Lodestone::Core::Incapacitation
 			g_anyFallen.store(!g_fallen.empty(), std::memory_order_relaxed);
 		}
 
+		// -------------------------------------------------------------------
+		// L-K4 - THE STAND-UP WATCH
+		//
+		// Two cases end with a body left on the ground, and neither had
+		// anything watching it:
+		//
+		//   - LOAD. The engine hands an actor saved mid-knockdown back with
+		//     life 3, knock 7 and its 3D loaded. StandUpAfterLoad writes the
+		//     labels (life 0, knock 6) at kPostLoadGame and nothing else; in
+		//     the consumer's rounds the body stayed down in 6 of 6 loads. The
+		//     label never moved a body in any measurement of this module.
+		//   - RELEASE. 2 of 90 releases in the consumer's rounds took the
+		//     stand-up (the graph returned true) and the body stopped about
+		//     17 units off the floor, for 17 s. The log could not tell them
+		//     from the 88 that stood, because nothing looked after the
+		//     release.
+		//
+		// THE WATCH ONLY LOOKS. It sends nothing to the body. Two builds
+		// tried to stand the body up from here and neither did:
+		//
+		//   - 1.33.7 sent the release's steps (handler, kGetUp, nudge,
+		//     'GetUpBegin') in one frame: 0 of 3 loads stood, and every
+		//     resend put the body back into ragdoll.
+		//   - 1.33.8 sent the engine's own path only (handler and nudge): the
+		//     engine started the get-up itself and the graph ran it to the
+		//     end (GetUpStart, Getup, GetUpEnd, GetUpExit, knock 0), and the
+		//     body stayed frozen with the head at 18-24 in 3 of 3 loads.
+		//     'GetUpBegin' sent again on a frozen body was refused 32 of 32.
+		//
+		// The release A of the bench looks the same: the graph finishes the
+		// get-up and the body does not follow. What is left here is the part
+		// that worked in both builds - reading the body: the head against the
+		// root, every frame, until it is up or the watch runs out. That is
+		// the line that tells a body that stood from one that did not.
+		//
+		// Keyed by FormID, guarded by g_registryLock, cleared with the fallen
+		// set. An actor without 3D waits in the watch until its 3D loads.
+		// -------------------------------------------------------------------
+		enum class WatchReason : std::uint8_t
+		{
+			kLoad,
+			kRelease
+		};
+
+		struct StandUpWatch
+		{
+			RE::ActorHandle handle;
+			WatchReason     reason = WatchReason::kLoad;
+
+			// False until the watch has started its clock - true from the
+			// start for a release.
+			bool started = false;
+
+			// Frames seen with 3D since the actor entered the watch or lost
+			// its 3D. A load starts its clock only after a few: kPostLoadGame
+			// comes before the first frame.
+			std::uint32_t framesWith3D = 0;
+
+			// When the clock started, and whether the "not up" warning is out.
+			std::chrono::steady_clock::time_point since{};
+			bool                                  warned = false;
+
+			// Consecutive frames read as up. One frame is not enough: the
+			// get-up passes through standing heights on its way.
+			std::uint32_t upFrames = 0;
+
+			// The graph's own announcements while watched: the first tag
+			// starting with "GetUp" is logged, the rest only counted.
+			std::uint32_t getUpTags = 0;
+
+			// The animation sink is on this actor for the watch.
+			bool sinkOn = false;
+		};
+
+		std::unordered_map<RE::FormID, StandUpWatch> g_standUp;
+		std::atomic<bool>                            g_anyStandUp{ false };
+
+		// Call under g_registryLock, after any change to g_standUp.
+		void RefreshStandUpFlag()
+		{
+			g_anyStandUp.store(!g_standUp.empty(), std::memory_order_relaxed);
+		}
+
+		const char* WatchReasonName(WatchReason a_reason)
+		{
+			return a_reason == WatchReason::kLoad ? "load" : "release";
+		}
+
 		// How many DISTINCT animation events to write per knockout before going
 		// quiet. Distinct is what makes the budget go far enough: repetition is
 		// collapsed before it is counted, so this covers transitions rather
@@ -387,6 +475,23 @@ namespace Lodestone::Core::Incapacitation
 						std::lock_guard lock(g_registryLock);
 						const auto it = g_fallen.find(formID);
 						if (it == g_fallen.end()) {
+							// L-K4: not down, maybe watched - the graph's word
+							// that the body started up, first tag logged.
+							if (getUpTag) {
+								if (const auto w = g_standUp.find(formID); w != g_standUp.end()) {
+									if (w->second.getUpTags++ == 0) {
+										spdlog::info("Incapacitation: [stand-up] actor (0x{:08X}) - the graph "
+													 "announced '{}' at +{:.2f} s into the {} watch, knock {}.",
+											formID, a_event->tag.c_str(),
+											w->second.started ?
+												std::chrono::duration<double>(std::chrono::steady_clock::now() -
+																			  w->second.since)
+													.count() :
+												0.0,
+											WatchReasonName(w->second.reason), knockNow);
+									}
+								}
+							}
 							return RE::BSEventNotifyControl::kContinue;
 						}
 
@@ -1426,6 +1531,214 @@ namespace Lodestone::Core::Incapacitation
 		};
 
 		// -------------------------------------------------------------------
+		// L-K4 - the stand-up watch, frame by frame (see StandUpWatch above)
+		// -------------------------------------------------------------------
+
+		// Up is the head at this fraction of the standing height or above -
+		// the "up" of the L-K1 rule, shared with the consumer's harness.
+		constexpr float kUpFraction = 0.8F;
+
+		// Frames in a row read as up before the watch closes.
+		constexpr std::uint32_t kUpFrames = 10;
+
+		// Frames with 3D before a load starts its clock.
+		constexpr std::uint32_t kStartAfterFrames = 30;
+
+		// The clock. Bodies that stood on the bench did it at +4.5 to +7.2 s
+		// after the release, and a slow one at about +15 s; the frozen ones
+		// were still frozen at +14 s. The warning goes out at kNotUpSeconds,
+		// and the watch keeps reading until kWatchSeconds, so a body that
+		// stands late still gets its line.
+		constexpr double kNotUpSeconds = 20.0;
+		constexpr double kWatchSeconds = 60.0;
+
+		// The head of a body standing, by FormID, taken by KnockDown before
+		// the fall. Lives for the session, so an actor knocked down and then
+		// saved and loaded is measured against itself. Guarded by
+		// g_registryLock.
+		std::unordered_map<RE::FormID, float> g_standingHead;
+
+		double SecondsSinceTime(std::chrono::steady_clock::time_point a_then)
+		{
+			return std::chrono::duration<double>(std::chrono::steady_clock::now() - a_then).count();
+		}
+
+		// Head node against the root, or a negative value with no head node.
+		float HeadHeight(RE::Actor* a_actor)
+		{
+			if (auto* root = a_actor->Get3D()) {
+				if (const auto* head = root->GetObjectByName(RE::BSFixedString("NPC Head [Head]"))) {
+					return head->world.translate.z - a_actor->GetPosition().z;
+				}
+			}
+			return -1.0F;
+		}
+
+		// The head of this body standing: what KnockDown measured, or, for an
+		// actor this session never saw standing, the height of its bounds.
+		float StandingHeight(RE::Actor* a_actor)
+		{
+			{
+				std::lock_guard lock(g_registryLock);
+				if (const auto it = g_standingHead.find(a_actor->GetFormID()); it != g_standingHead.end()) {
+					return it->second;
+				}
+			}
+			return a_actor->GetHeight();
+		}
+
+		// Up by the body: the head high enough, or - with no head node - knock 0
+		// and out of ragdoll.
+		bool IsUp(RE::Actor* a_actor, float a_head, float a_standing)
+		{
+			if (a_actor->IsInRagdollState()) {
+				return false;
+			}
+			if (a_head >= 0.0F && a_standing > 0.0F) {
+				return a_head >= a_standing * kUpFraction;
+			}
+			return ReadKnockState(a_actor) == RE::KNOCK_STATE_ENUM::kNormal;
+		}
+
+		// Takes the actor out of the watch; the sink comes off outside the
+		// lock, like everywhere else in this file.
+		void CloseWatch(RE::Actor* a_actor, RE::FormID a_formID)
+		{
+			bool sinkOn = false;
+			{
+				std::lock_guard lock(g_registryLock);
+				if (const auto it = g_standUp.find(a_formID); it != g_standUp.end()) {
+					sinkOn = it->second.sinkOn;
+					g_standUp.erase(it);
+					RefreshStandUpFlag();
+				}
+			}
+			if (sinkOn && a_actor) {
+				a_actor->RemoveAnimationGraphEventSink(AnimationSink::GetSingleton());
+			}
+		}
+
+		// Player frame, main thread. Reads; never writes on the actor.
+		void WatchStandUps()
+		{
+			std::vector<std::pair<RE::FormID, RE::ActorHandle>> watched;
+			{
+				std::lock_guard lock(g_registryLock);
+				for (const auto& [formID, watch] : g_standUp) {
+					watched.emplace_back(formID, watch.handle);
+				}
+			}
+
+			for (const auto& [formID, handle] : watched) {
+				const auto actorPtr = handle.get();
+				auto*      actor = actorPtr.get();
+				if (!actor || actor->IsDead()) {
+					CloseWatch(actor, formID);
+					spdlog::info("Incapacitation: [stand-up] actor (0x{:08X}) - {}; watch closed.", formID,
+						actor ? "dead" : "no longer resolves");
+					continue;
+				}
+
+				StandUpWatch w;
+				{
+					std::lock_guard lock(g_registryLock);
+					const auto      it = g_standUp.find(formID);
+					if (it == g_standUp.end()) {
+						continue;
+					}
+					if (!actor->Is3DLoaded()) {
+						it->second.framesWith3D = 0;
+						it->second.upFrames = 0;
+						continue;
+					}
+					++it->second.framesWith3D;
+					w = it->second;
+				}
+
+				const float head = HeadHeight(actor);
+				const float standing = StandingHeight(actor);
+				const bool  up = IsUp(actor, head, standing);
+
+				if (!w.started) {
+					if (w.framesWith3D < kStartAfterFrames) {
+						continue;
+					}
+					bool addSink = false;
+					{
+						std::lock_guard lock(g_registryLock);
+						if (const auto it = g_standUp.find(formID); it != g_standUp.end()) {
+							addSink = !it->second.sinkOn;
+							it->second.sinkOn = true;
+							it->second.started = true;
+							it->second.since = std::chrono::steady_clock::now();
+							it->second.upFrames = 0;
+						}
+					}
+					if (addSink) {
+						actor->AddAnimationGraphEventSink(AnimationSink::GetSingleton());
+					}
+					spdlog::info("Incapacitation: [stand-up] actor (0x{:08X}) - {} watch started, {} frames after its "
+								 "3D: head {:.1f} of {:.1f}, life {}, knock {}, ragdoll {}.",
+						formID, WatchReasonName(w.reason), kStartAfterFrames, head, standing,
+						static_cast<std::uint32_t>(ReadLifeState(actor)),
+						static_cast<std::uint32_t>(ReadKnockState(actor)), actor->IsInRagdollState());
+					continue;
+				}
+
+				const double elapsed = SecondsSinceTime(w.since);
+
+				if (up) {
+					bool closeNow = false;
+					{
+						std::lock_guard lock(g_registryLock);
+						if (const auto it = g_standUp.find(formID); it != g_standUp.end()) {
+							closeNow = ++it->second.upFrames >= kUpFrames;
+						}
+					}
+					if (closeNow) {
+						CloseWatch(actor, formID);
+						spdlog::info("Incapacitation: [stand-up] actor (0x{:08X}) stood up at +{:.2f} s into the {} "
+									 "watch - head {:.1f} of {:.1f}, knock {}, life {}.",
+							formID, elapsed, WatchReasonName(w.reason), head, standing,
+							static_cast<std::uint32_t>(ReadKnockState(actor)),
+							static_cast<std::uint32_t>(ReadLifeState(actor)));
+					}
+					continue;
+				}
+
+				bool warnNow = false;
+				{
+					std::lock_guard lock(g_registryLock);
+					if (const auto it = g_standUp.find(formID); it != g_standUp.end()) {
+						it->second.upFrames = 0;
+						if (elapsed >= kNotUpSeconds && !it->second.warned) {
+							it->second.warned = true;
+							warnNow = true;
+						}
+					}
+				}
+
+				if (warnNow) {
+					spdlog::warn("Incapacitation: [stand-up] actor (0x{:08X}) - NOT UP at +{:.2f} s into the {} watch: "
+								 "head {:.1f} of {:.1f}, knock {}, life {}, ragdoll {}. Nothing is sent; still "
+								 "watching to +{:.0f} s.",
+						formID, elapsed, WatchReasonName(w.reason), head, standing,
+						static_cast<std::uint32_t>(ReadKnockState(actor)),
+						static_cast<std::uint32_t>(ReadLifeState(actor)), actor->IsInRagdollState(), kWatchSeconds);
+				}
+
+				if (elapsed >= kWatchSeconds) {
+					CloseWatch(actor, formID);
+					spdlog::info("Incapacitation: [stand-up] actor (0x{:08X}) - still not up at +{:.2f} s into the {} "
+								 "watch (head {:.1f} of {:.1f}, knock {}, life {}); watch closed.",
+						formID, elapsed, WatchReasonName(w.reason), head, standing,
+						static_cast<std::uint32_t>(ReadKnockState(actor)),
+						static_cast<std::uint32_t>(ReadLifeState(actor)));
+				}
+			}
+		}
+
+		// -------------------------------------------------------------------
 		// The frame hook
 		//
 		// EXPERIMENTAL, AND IT IS NOT WHAT THE REFERENCE IMPLEMENTATION DOES.
@@ -1522,6 +1835,15 @@ namespace Lodestone::Core::Incapacitation
 			static void thunk(RE::Actor* a_this, float a_delta)
 			{
 				func(a_this, a_delta);
+
+				// L-K4: the stand-up watch rides the same frame, with its own flag.
+				if (g_anyStandUp.load(std::memory_order_relaxed)) {
+					try {
+						WatchStandUps();
+					} catch (...) {
+						spdlog::error("Incapacitation: the stand-up watch threw - swallowed.");
+					}
+				}
 
 				if (!g_anyFallen.load(std::memory_order_relaxed)) {
 					return;
@@ -1879,10 +2201,37 @@ namespace Lodestone::Core::Incapacitation
 				state.viaKnockDown = true;
 				state.origin = ResolveOrigin(a_actor, a_source, originFrom);
 				state.downAt = std::chrono::steady_clock::now();
+
+				// L-K4: the body standing, before the fall - what the stand-up
+				// watch measures it against later. Only from a body on its feet
+				// by the reference it already has (or its bounds): the consumer
+				// may knock down a body that never got up, and its head then is
+				// not a standing head.
+				const float headNow = ReadSitSleepState(a_actor) == RE::SIT_SLEEP_STATE::kNormal &&
+				                              !a_actor->IsInRagdollState() ?
+				                          HeadHeight(a_actor) :
+				                          -1.0F;
+				const float boundsHeight = a_actor->GetHeight();
+
+				// L-K4: a new knockdown ends a stand-up watch still open on this
+				// actor; the sink stays on, the knockdown re-adds it below.
+				bool watchClosed = false;
 				{
 					std::lock_guard lock(g_registryLock);
+					watchClosed = g_standUp.erase(formID) > 0;
+					RefreshStandUpFlag();
+					const auto  known = g_standingHead.find(formID);
+					const float reference = known != g_standingHead.end() ? known->second : boundsHeight;
+					if (headNow > 0.0F && (reference <= 0.0F || headNow >= reference * kUpFraction)) {
+						g_standingHead[formID] = headNow;
+					}
 					g_fallen.emplace(formID, state);
 					RefreshFallenFlag();
+				}
+				if (watchClosed) {
+					spdlog::info("Incapacitation: [stand-up] actor (0x{:08X}) - knocked down again while watched; "
+								 "watch closed.",
+						formID);
 				}
 
 				a_actor->AddAnimationGraphEventSink(AnimationSink::GetSingleton());
@@ -1992,9 +2341,21 @@ namespace Lodestone::Core::Incapacitation
 					}
 					g_fallen.erase(formID);
 					RefreshFallenFlag();
+
+					// L-K4: into the stand-up watch, clock started now - the
+					// steps below are the stand-up. The animation sink stays on
+					// until the watch closes.
+					StandUpWatch watch;
+					watch.handle = a_actor->GetHandle();
+					watch.reason = WatchReason::kRelease;
+					watch.started = true;
+					watch.framesWith3D = kStartAfterFrames;
+					watch.since = std::chrono::steady_clock::now();
+					watch.sinkOn = true;
+					g_standUp[formID] = watch;
+					RefreshStandUpFlag();
 				}
 
-				a_actor->RemoveAnimationGraphEventSink(AnimationSink::GetSingleton());
 				a_actor->GetActorRuntimeData().boolFlags.reset(RE::Actor::BOOL_FLAGS::kDoNotShowOnStealthMeter);
 
 				// L-K3. The graph hold ate the get-up the engine sent; the
@@ -2053,10 +2414,18 @@ namespace Lodestone::Core::Incapacitation
 		}
 
 		// D3: a load ends every knockdown. The actors come from the 'KND1'
-		// record, read during the load and acted on here, at kPostLoadGame.
-		// No OnActorWoke: the consumer's registration is per session and may
-		// not be back yet, and an event that arrives on some loads and not on
-		// others is not a contract.
+		// record, read during the load and acted on from here, at
+		// kPostLoadGame. No OnActorWoke: the consumer's registration is per
+		// session and may not be back yet, and an event that arrives on some
+		// loads and not on others is not a contract.
+		//
+		// L-K4: WHAT THIS WRITES ARE LABELS, AND A LABEL IS NOT A STAND-UP.
+		// The engine hands the actor back with life 3, knock 7 and 3D, and
+		// with these labels the body stayed on the ground in 6 of 6 loads of
+		// the consumer's rounds. Two stand-ups sent from the frame after the
+		// load did not get it up either (see the stand-up watch). The labels
+		// stay, so the API reads the knockdown as over, and the actor goes
+		// into the watch, whose line says what the body did.
 		void StandUpAfterLoad()
 		{
 			std::vector<RE::FormID> pending;
@@ -2095,13 +2464,23 @@ namespace Lodestone::Core::Incapacitation
 					actor->GetActorRuntimeData().boolFlags.reset(RE::Actor::BOOL_FLAGS::kDoNotShowOnStealthMeter);
 					actor->EvaluatePackage(true, true);
 
-					spdlog::info("Incapacitation: actor (0x{:08X}) was down when the game was saved - stood up "
-								 "on load. Before: life {}, knock {}, sit/sleep {}; after: life {}, knock {}, "
-								 "sit/sleep {}, 3D {}.",
+					StandUpWatch watch;
+					watch.handle = actor->GetHandle();
+					watch.reason = WatchReason::kLoad;
+					{
+						std::lock_guard lock(g_registryLock);
+						g_standUp[formID] = watch;
+						RefreshStandUpFlag();
+					}
+
+					spdlog::info("Incapacitation: actor (0x{:08X}) was down when the game was saved - labels "
+								 "written on load, the body is not moved by them. Before: life {}, knock {}, sit/sleep "
+								 "{}; after: life {}, knock {}, sit/sleep {}, 3D {}. Watched from {} frames after its "
+								 "3D is in the world.",
 						formID, static_cast<std::uint32_t>(life), static_cast<std::uint32_t>(knock),
 						static_cast<std::uint32_t>(sit), static_cast<std::uint32_t>(ReadLifeState(actor)),
 						static_cast<std::uint32_t>(ReadKnockState(actor)),
-						static_cast<std::uint32_t>(ReadSitSleepState(actor)), actor->Is3DLoaded());
+						static_cast<std::uint32_t>(ReadSitSleepState(actor)), actor->Is3DLoaded(), kStartAfterFrames);
 				} catch (...) {
 					spdlog::error("Incapacitation: standing actor (0x{:08X}) up after the load threw.", formID);
 				}
@@ -2156,6 +2535,8 @@ namespace Lodestone::Core::Incapacitation
 						wasManaged = g_registry.erase(formID) > 0;
 						wasFallen = g_fallen.erase(formID) > 0;
 						RefreshFallenFlag();
+						g_standUp.erase(formID);
+						RefreshStandUpFlag();
 					}
 
 					// This event fires more than once for a single death (the
@@ -2304,6 +2685,8 @@ namespace Lodestone::Core::Incapacitation
 			// And nobody is queued to stand up until this save's own record
 			// says so.
 			g_standUpAfterLoad.clear();
+			g_standUp.clear();
+			RefreshStandUpFlag();
 		}
 
 		// L-K1, D3. Reads who was down when the save was written into the
@@ -2398,7 +2781,10 @@ namespace Lodestone::Core::Incapacitation
 			g_registry.clear();
 			g_fallen.clear();
 			g_standUpAfterLoad.clear();
+			g_standUp.clear();
+			g_standingHead.clear();
 			RefreshFallenFlag();
+			RefreshStandUpFlag();
 			spdlog::info("Incapacitation: registry and fallen set cleared (new game or return to main menu).");
 		}
 	}
