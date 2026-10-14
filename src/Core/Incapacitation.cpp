@@ -2452,6 +2452,45 @@ namespace Lodestone::Core::Incapacitation
 					const auto knock = ReadKnockState(actor);
 					const auto sit = ReadSitSleepState(actor);
 
+					// L-K4 F. THE BODY THE ENGINE HANDED BACK AS DOWN IS LEFT AS IT
+					// IS, AND THE ACTOR GOES BACK INTO THE FALLEN SET. The
+					// knockout extensions do not touch such an actor at load; its
+					// release is the one that stands it (the same release as in
+					// play: handler, get-up, nudge, resync). The labels written
+					// below at load never moved a body, so a load that writes them
+					// has already spent the state the release works from.
+					if (life == RE::ACTOR_LIFE_STATE::kUnconcious) {
+						FallenState state;
+						state.handle = actor->GetHandle();
+						state.viaKnockDown = true;
+						state.applied = true;
+						state.origin = actor->GetPosition();
+						state.downAt = std::chrono::steady_clock::now();
+
+						bool added = false;
+						{
+							std::lock_guard lock(g_registryLock);
+							added = g_fallen.emplace(formID, state).second;
+							RefreshFallenFlag();
+						}
+
+						if (added) {
+							const bool has3D = actor->Is3DLoaded();
+							if (has3D) {
+								actor->AddAnimationGraphEventSink(AnimationSink::GetSingleton());
+							}
+							actor->GetActorRuntimeData().boolFlags.set(
+								RE::Actor::BOOL_FLAGS::kDoNotShowOnStealthMeter);
+
+							spdlog::info("Incapacitation: actor (0x{:08X}) was down when the game was saved - kept "
+										 "down as the engine gave it back (life {}, knock {}, sit/sleep {}, 3D {}), "
+										 "back in the fallen set; KnockDownRelease stands it up.",
+								formID, static_cast<std::uint32_t>(life), static_cast<std::uint32_t>(knock),
+								static_cast<std::uint32_t>(sit), has3D);
+							continue;
+						}
+					}
+
 					if (life == RE::ACTOR_LIFE_STATE::kUnconcious) {
 						actor->SetLifeState(RE::ACTOR_LIFE_STATE::kAlive);
 					}
@@ -2626,7 +2665,7 @@ namespace Lodestone::Core::Incapacitation
 			}
 
 			if (count > 0) {
-				spdlog::info("Incapacitation: saved {} knocked-down actor(s) - they stand up when this save is "
+				spdlog::info("Incapacitation: saved {} knocked-down actor(s) - they come back into the fallen set when this save is "
 							 "loaded.",
 					count);
 			}
@@ -2720,7 +2759,7 @@ namespace Lodestone::Core::Incapacitation
 			}
 
 			if (count > 0) {
-				spdlog::info("Incapacitation: {} actor(s) were down when this save was written - they stand up "
+				spdlog::info("Incapacitation: {} actor(s) were down when this save was written - they are handled "
 							 "at kPostLoadGame.",
 					g_standUpAfterLoad.size());
 			}
