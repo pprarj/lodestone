@@ -229,6 +229,21 @@ namespace Lodestone::Core::Incapacitation
 
 			// The animation sink is on this actor for the watch.
 			bool sinkOn = false;
+
+			// L-K4 G. The way back out of an abandoned get-up (see
+			// kRecoverSeconds): 0 nothing done, 1 the actor is disabled and
+			// waits for its Enable, 2 done - once per watch, never again.
+			std::uint8_t                          recoverStage = 0;
+			std::chrono::steady_clock::time_point recoverAt{};
+
+			// Progress of the head, sampled every kStallWindowSeconds: the
+			// head at the last sample, when it was taken, and whether it
+			// rose less than kStallUnits since the sample before. A body
+			// that is still getting up, slowly, is rising; the frozen ones
+			// were flat to within two units.
+			float                                 headMark = 0.0F;
+			std::chrono::steady_clock::time_point markAt{};
+			bool                                  stalled = false;
 		};
 
 		std::unordered_map<RE::FormID, StandUpWatch> g_standUp;
@@ -1552,6 +1567,32 @@ namespace Lodestone::Core::Incapacitation
 		constexpr double kNotUpSeconds = 20.0;
 		constexpr double kWatchSeconds = 60.0;
 
+		// L-K4 G. A body loaded from a save that had been standing a while
+		// can take the first knockdown of the session, have the graph announce
+		// the get-up at +0.27 s instead of +0.50 s, the engine zero its knock
+		// state, and stay on the floor: knock 0, life 0, no ragdoll, head at
+		// 8-20 of 124, in 3 of 3 bench loads and 2 of 3 consumer rounds. Not
+		// one thing sent to the body moved it (the graph events, the default
+		// idle, a ragdoll remove and add, a re-skin, a push). Disabling the
+		// actor and enabling it again rebuilt the 3D and stood it in 2 of 2.
+		// Normal stand-ups were up by +4.5 s and the slow ones by +10.5 s on
+		// the bench (30 plain releases, 1.33.14: 3 of 30 at +9 s or more). At
+		// 8 s, 9 of 30 plain releases were flagged that were going to stand
+		// alone, so the body has to be past kRecoverSeconds, with knock 0,
+		// alive, out of ragdoll and not rising, before this is used - and
+		// only for a release of our own.
+		constexpr double kRecoverSeconds = 11.0;
+
+		// Between the Disable and the Enable. Short on purpose: a save made in
+		// this window keeps the actor disabled.
+		constexpr double kRecoverGapSeconds = 0.5;
+
+		// "Not getting up": the head rose by less than kStallUnits over the
+		// last kStallWindowSeconds. In the bench 11 of 30 plain releases were
+		// still low at +8 s with knock 0 and most of them were rising.
+		constexpr double kStallWindowSeconds = 3.0;
+		constexpr float  kStallUnits = 5.0F;
+
 		// The head of a body standing, by FormID, taken by KnockDown before
 		// the fall. Lives for the session, so an actor knocked down and then
 		// saved and loaded is measured against itself. Guarded by
@@ -1563,7 +1604,13 @@ namespace Lodestone::Core::Incapacitation
 			return std::chrono::duration<double>(std::chrono::steady_clock::now() - a_then).count();
 		}
 
-		// Head node against the root, or a negative value with no head node.
+		// "No head node". Not -1: a body on the floor can have its head BELOW
+		// the root (-21.2 in the bench), and the old -1 test read that as no
+		// head, fell back to knock 0 and logged "stood up" on a body that was
+		// lying there.
+		constexpr float kNoHead = -1.0e6F;
+
+		// Head node against the root, or kNoHead with no head node.
 		float HeadHeight(RE::Actor* a_actor)
 		{
 			if (auto* root = a_actor->Get3D()) {
@@ -1571,7 +1618,7 @@ namespace Lodestone::Core::Incapacitation
 					return head->world.translate.z - a_actor->GetPosition().z;
 				}
 			}
-			return -1.0F;
+			return kNoHead;
 		}
 
 		// The head of this body standing: what KnockDown measured, or, for an
@@ -1594,7 +1641,7 @@ namespace Lodestone::Core::Incapacitation
 			if (a_actor->IsInRagdollState()) {
 				return false;
 			}
-			if (a_head >= 0.0F && a_standing > 0.0F) {
+			if (a_head > kNoHead && a_standing > 0.0F) {
 				return a_head >= a_standing * kUpFraction;
 			}
 			return ReadKnockState(a_actor) == RE::KNOCK_STATE_ENUM::kNormal;
@@ -1618,7 +1665,8 @@ namespace Lodestone::Core::Incapacitation
 			}
 		}
 
-		// Player frame, main thread. Reads; never writes on the actor.
+		// Player frame, main thread. Reads, except for the one recovery of
+		// kRecoverSeconds: Disable, then Enable half a second later.
 		void WatchStandUps()
 		{
 			std::vector<std::pair<RE::FormID, RE::ActorHandle>> watched;
@@ -1636,6 +1684,36 @@ namespace Lodestone::Core::Incapacitation
 					CloseWatch(actor, formID);
 					spdlog::info("Incapacitation: [stand-up] actor (0x{:08X}) - {}; watch closed.", formID,
 						actor ? "dead" : "no longer resolves");
+					continue;
+				}
+
+				// L-K4 G: the second half of a recovery. The actor was disabled
+				// by this watch a moment ago; its Enable is due. The clock and
+				// the up count start over, so "stood up at +N s" counts from
+				// the Enable.
+				bool enableNow = false;
+				{
+					std::lock_guard lock(g_registryLock);
+					const auto      it = g_standUp.find(formID);
+					if (it == g_standUp.end()) {
+						continue;
+					}
+					if (it->second.recoverStage == 1 && SecondsSinceTime(it->second.recoverAt) >= kRecoverGapSeconds) {
+						it->second.recoverStage = 2;
+						it->second.since = std::chrono::steady_clock::now();
+						it->second.upFrames = 0;
+						it->second.warned = false;
+						it->second.framesWith3D = 0;
+						it->second.markAt = {};
+						it->second.stalled = false;
+						enableNow = true;
+					}
+				}
+				if (enableNow) {
+					actor->Enable(false);
+					spdlog::info("Incapacitation: [stand-up] actor (0x{:08X}) - recovery: enabled again; the watch "
+								 "starts over from here.",
+						formID);
 					continue;
 				}
 
@@ -1706,7 +1784,19 @@ namespace Lodestone::Core::Incapacitation
 					continue;
 				}
 
+				// L-K4 G: a release of ours that the engine abandoned. Knock 0,
+				// alive, out of ragdoll, past kRecoverSeconds and not rising -
+				// the head moved less than kStallUnits in the last
+				// kStallWindowSeconds. A body still getting up has knock 6 or
+				// a head on its way, and is left alone.
+				const bool abandonedBase = w.reason == WatchReason::kRelease && w.recoverStage == 0 &&
+				                           elapsed >= kRecoverSeconds &&
+				                           ReadKnockState(actor) == RE::KNOCK_STATE_ENUM::kNormal &&
+				                           ReadLifeState(actor) == RE::ACTOR_LIFE_STATE::kAlive &&
+				                           !actor->IsInRagdollState() && !actor->IsPlayerRef();
+
 				bool warnNow = false;
+				bool recoverNow = false;
 				{
 					std::lock_guard lock(g_registryLock);
 					if (const auto it = g_standUp.find(formID); it != g_standUp.end()) {
@@ -1715,7 +1805,37 @@ namespace Lodestone::Core::Incapacitation
 							it->second.warned = true;
 							warnNow = true;
 						}
+
+						// The head's progress, one sample per window.
+						const auto sampleNow = std::chrono::steady_clock::now();
+						if (it->second.markAt.time_since_epoch().count() == 0) {
+							it->second.headMark = head;
+							it->second.markAt = sampleNow;
+						} else if (std::chrono::duration<double>(sampleNow - it->second.markAt).count() >=
+								   kStallWindowSeconds) {
+							it->second.stalled = (head - it->second.headMark) < kStallUnits;
+							it->second.headMark = head;
+							it->second.markAt = sampleNow;
+						}
+
+						if (abandonedBase && it->second.stalled && it->second.recoverStage == 0) {
+							it->second.recoverStage = 1;
+							it->second.recoverAt = std::chrono::steady_clock::now();
+							recoverNow = true;
+						}
 					}
+				}
+
+				if (recoverNow) {
+					spdlog::warn("Incapacitation: [stand-up] actor (0x{:08X}) - get-up abandoned by the engine at "
+								 "+{:.2f} s into the {} watch: head {:.1f} of {:.1f}, knock {}, life {}, ragdoll {}. "
+								 "Recovery: disabled now, enabled again in {:.1f} s to rebuild the 3D.",
+						formID, elapsed, WatchReasonName(w.reason), head, standing,
+						static_cast<std::uint32_t>(ReadKnockState(actor)),
+						static_cast<std::uint32_t>(ReadLifeState(actor)), actor->IsInRagdollState(),
+						kRecoverGapSeconds);
+					actor->Disable();
+					continue;
 				}
 
 				if (warnNow) {
@@ -2179,6 +2299,16 @@ namespace Lodestone::Core::Incapacitation
 					}
 					if (g_registry.contains(formID)) {
 						return kRefusedManaged;
+					}
+					// L-K4 G: the stand-up recovery has this actor disabled for
+					// half a second; a knockdown now would drop the watch that
+					// is going to enable it again.
+					if (const auto it = g_standUp.find(formID);
+						it != g_standUp.end() && it->second.recoverStage == 1) {
+						spdlog::info("Incapacitation: KnockDown refused actor (0x{:08X}) - the stand-up recovery has "
+									 "it disabled for a moment.",
+							formID);
+						return kRefusedNotLoaded;
 					}
 				}
 
