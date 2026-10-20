@@ -9,6 +9,7 @@
 
 #include "BookFramework.h"
 #include "CastTime.h"
+#include "ChordClaim.h"
 #include "ChannelInfo.h"
 #include "Detection.h"
 #include "DetectionRead.h"
@@ -52,6 +53,7 @@ namespace Lodestone::Core::Papyrus
 		ok &= SpellRead::RegisterFuncs(a_vm);         // L-F3 - spell batch readers
 		ok &= MenuPrompt::RegisterFuncs(a_vm);        // L-U8 - on-screen player prompts
 		ok &= Translation::RegisterFuncs(a_vm);       // L-T2 - translation key resolution
+		ok &= ChordClaim::RegisterFuncs(a_vm);        // L-H1 - claimed key chords
 
 		if (ok) {
 			spdlog::info("Papyrus: all modules registered.");

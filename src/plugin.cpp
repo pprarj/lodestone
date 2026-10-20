@@ -45,6 +45,7 @@
 // RE/Skyrim.h and SKSE/SKSE.h come from PCH.h (force-included by CMake).
 #include "Core/BookFramework.h"
 #include "Core/CastTime.h"
+#include "Core/ChordClaim.h"
 #include "Core/EquipVeto.h"
 #include "Core/Incapacitation.h"
 #include "Core/Log.h"
@@ -102,6 +103,12 @@ namespace
 		// were knocked down - a load ends every knockdown. Same shape as
 		// MenuPrompt: the module picks its message.
 		Lodestone::Core::Incapacitation::HandleSKSEMessage(a_msg);
+
+		// ChordClaim puts its input sink in front of the others at kInputLoaded
+		// (the input device manager is null before it) and drops every claim at a
+		// load or a new game. Same shape as MenuPrompt: the module picks its
+		// messages.
+		Lodestone::Core::ChordClaim::HandleSKSEMessage(a_msg);
 
 		if (a_msg->type == SKSE::MessagingInterface::kDataLoaded) {
 			Lodestone::Core::CastTime::Install();

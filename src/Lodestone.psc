@@ -2100,6 +2100,102 @@ Int Function MenuPromptText(String asTitle, String asSuggestion) global native
 String Function MenuPromptTakeText(Int aiTicket) global native
 
 ;--------------------------------------------------------------
+; Claimed key chords (L-H1, 1.34.0)
+;--------------------------------------------------------------
+;
+; WHAT THIS IS FOR. Papyrus cannot stop a second RegisterForKey from receiving a
+; key. If your mod binds Shift+U and another mod is bound to bare U and checks no
+; modifier, one press fires both, and nothing you do inside the VM changes that.
+; A claimed chord is taken out of the input before it reaches anyone else: the
+; other mod's OnKeyDown does not fire and the game's own action for the key does
+; not run. You are told by a mod event instead.
+;
+; A CHORD IS ONE KEYBOARD KEY PLUS AT LEAST ONE MODIFIER.
+;   aiKey        a DirectInput scan code, 1 to 255 (U is 22, T is 20). The six
+;                modifier keys themselves are refused as the key.
+;   aiModifiers  a mask: 1 = Shift, 2 = Ctrl, 4 = Alt, added together (1..7).
+;                The same family as the SoulLedger toml and AM_Hotkey. ZERO IS
+;                REFUSED: a bare key is not claimable, because a conflict on a
+;                bare key is the player's to settle by remapping, not yours to
+;                win by taking the key from everyone.
+;
+; THE MATCH IS EXACT. Each of Shift, Ctrl and Alt must be down if and only if its
+; bit is in the mask, and either physical key of a modifier counts (left or
+; right). A chord claimed as Shift (1) is not taken when Shift and Ctrl are both
+; down, and a bare press of the key is never taken.
+;
+; WHAT IS TAKEN. The key's own down, its auto-repeat and its release, as ONE
+; press: the down is matched against the modifiers held at that instant, and the
+; repeat and the release that belong to it follow it whatever the modifiers do
+; afterwards. A release whose down was not taken (the key was pressed before the
+; chord was complete) is not touched, and neither is a second release of a press
+; whose first release was already taken (seen once, with injected input that made
+; the game deliver two overlapping presses of one key; a keyboard sends one). ONLY THAT KEY'S BUTTON EVENT IS TAKEN: the
+; modifiers, every other key and the mouse that arrive in the same frame go on
+; to everyone exactly as they would have.
+;
+; THE MODIFIERS ARE NEVER TAKEN. Shift is still Shift to the game, so a claimed
+; Shift+U still makes the player walk while it is held.
+;
+; ONLY OUTSIDE MENUS. While a menu that pauses the game is open, a modal menu is
+; open, or something is taking text (the console, a rename box), nothing is
+; taken and the press goes to whoever has the screen. With a menu open the
+; claim does nothing at all, and your event does not fire either.
+;
+; HOW YOU HEAR IT. Through a mod event whose name you choose in the claim:
+;
+;   RegisterForModEvent("MyMod_StatusChord", "OnStatusChord")
+;   Event OnStatusChord(String asEventName, String asPhase, Float afKey, Form akSender)
+;
+; asPhase is "down" or "up" (Papyrus compares strings without regard to case, and
+; the spelling that comes through has been seen as "Down" and "Up"); afKey is the
+; scan code. The event reaches only the
+; scripts that registered for THAT name, so choose one that cannot collide
+; (prefix it with your mod). Your own RegisterForKey on the same key does NOT
+; see the press while the chord is claimed - listen to the mod event instead.
+;
+; THE EVENT NAME IS YOUR IDENTITY. Only the same name can release the chord, and
+; a second mod that claims a chord you hold is REFUSED (-4), not given the
+; chord: the first claimant keeps it until it releases, or until a load. To move
+; a chord, ReleaseChord the old one and ClaimChord the new one.
+;
+; A CLAIM DOES NOT SURVIVE A LOAD. Claims live in memory, are dropped when a
+; save is loaded or a new game starts, and are not written to the save. Claim
+; again in OnPlayerLoadGame (and on a new game), exactly where you would call
+; RegisterForKey. Claiming the same chord again with the same name is harmless
+; (returns 1). A press in the instant between the load and your claim goes to
+; everybody.
+;
+; WHAT IT DOES NOT DO. It does not touch a bare key, the mouse, the console key
+; or a gamepad. It does not stop another mod that reads the keyboard some other
+; way than the game's input events (Input.IsKeyPressed polls the device and
+; still sees the key). A mod that put its own input hook in front of this one can
+; still get the press first.
+;
+; Gate on GetVersion() >= 1034000.
+
+; Claims the chord for asModEvent. Returns:
+;    0  claimed
+;    1  already yours (same chord, same name) - nothing changed
+;   -1  aiKey is not a claimable keyboard scan code (outside 1..255, or a modifier)
+;   -2  aiModifiers is zero or has a bit outside 1, 2 and 4
+;   -3  asModEvent is empty
+;   -4  the chord belongs to a different event name
+;   -5  the table is full (32 chords in the whole load order)
+;   -6  the input hook is not installed in this session
+; A negative return changed nothing.
+Int Function ClaimChord(Int aiKey, Int aiModifiers, String asModEvent) global native
+
+; Gives the chord back. True if it was yours and is now free; False if nobody
+; holds it under that name (including a chord held by another mod, which this
+; cannot take).
+Bool Function ReleaseChord(Int aiKey, Int aiModifiers, String asModEvent) global native
+
+; The event name the chord is claimed under, or "" if it is free. For diagnosis -
+; to learn who holds a chord you were refused (-4).
+String Function GetChordOwner(Int aiKey, Int aiModifiers) global native
+
+;--------------------------------------------------------------
 ; DEPRECATED - the 1.17.x names
 ;--------------------------------------------------------------
 ;
