@@ -71,8 +71,10 @@ namespace Lodestone::Core::ChordClaim
 			}
 		}
 
-		// EXACT match, the same rule as AM_Hotkey.ModifiersMatch: each of the
-		// three modifiers is down if and only if its bit is in the mask.
+		// The modifier mask as the sink's own events built it. A reserve and a
+		// diagnostic, not the truth: the release of a modifier that never reaches
+		// the sink (Alt+Tab hands the up to another window) leaves its slot set
+		// until the next press-and-release of that key. See KeyboardMask.
 		std::int32_t HeldMask()
 		{
 			std::int32_t mask = 0;
@@ -86,6 +88,38 @@ namespace Lodestone::Core::ChordClaim
 				mask |= kAlt;
 			}
 			return mask;
+		}
+
+		// The modifier mask as the keyboard device holds it NOW - the state
+		// Input.IsKeyPressed reads, and the one the claimant's own AM_Hotkey check
+		// sees. EXACT match is done against this: each of the three modifiers is
+		// down if and only if its bit is in the mask. Returns false when the
+		// device does not exist yet (the caller falls back to the events).
+		bool KeyboardMask(std::int32_t& a_mask)
+		{
+			auto*       manager  = RE::BSInputDeviceManager::GetSingleton();
+			const auto* keyboard = manager ? manager->GetKeyboard() : nullptr;
+			if (!keyboard) {
+				return false;
+			}
+
+			// curState read by hand: BSWin32KeyboardDevice::IsPressed lives in
+			// the same object file as the device's virtuals, which this plugin
+			// does not link (every virtual goes through RelocateVirtual).
+			const auto& state = keyboard->GetRuntimeData().curState;
+			const auto  down  = [&](std::uint32_t a_code) { return (state[a_code] & 0x80) != 0; };
+
+			a_mask = 0;
+			if (down(kLShift) || down(kRShift)) {
+				a_mask |= kShift;
+			}
+			if (down(kLCtrl) || down(kRCtrl)) {
+				a_mask |= kCtrl;
+			}
+			if (down(kLAlt) || down(kRAlt)) {
+				a_mask |= kAlt;
+			}
+			return true;
 		}
 
 		// A menu that pauses the game, a modal menu, or anything taking text
@@ -230,11 +264,47 @@ namespace Lodestone::Core::ChordClaim
 						if (g_claims.empty()) {
 							return false;
 						}
-						const auto mask = HeldMask();
-						const auto it   = std::find_if(g_claims.begin(), g_claims.end(), [&](const Entry& c) {
+
+						// A key nobody claimed is none of our business, and says
+						// nothing in the log.
+						std::string claimed;
+						for (const auto& c : g_claims) {
+							if (static_cast<std::uint32_t>(c.key) == code) {
+								claimed += (claimed.empty() ? "" : ",") + std::to_string(c.modifiers);
+							}
+						}
+						if (claimed.empty()) {
+							return false;
+						}
+
+						// The mask is the keyboard's, not the events': a modifier
+						// whose release never reached this sink stays set in the
+						// events and turned Shift+U into mask 5 (L-H1b, D-H1-2).
+						const auto fromEvents = HeldMask();
+						std::int32_t fromKeyboard = 0;
+						const bool   haveKeyboard = KeyboardMask(fromKeyboard);
+						const auto   mask         = haveKeyboard ? fromKeyboard : fromEvents;
+
+						const auto it = std::find_if(g_claims.begin(), g_claims.end(), [&](const Entry& c) {
 							return static_cast<std::uint32_t>(c.key) == code && c.modifiers == mask;
 						});
-						if (it == g_claims.end() || !InGameplay()) {
+						const bool gameplay = InGameplay();
+
+						const char* why = "mask matches a claim";
+						bool        take = true;
+						if (it == g_claims.end()) {
+							why  = haveKeyboard ? "mask has no claim" : "mask has no claim, keyboard unavailable";
+							take = false;
+						} else if (!gameplay) {
+							why  = "menu or text entry";
+							take = false;
+						}
+
+						spdlog::info("ChordClaim: key {} down -- mask eventos={} teclado={} claim={} jogo={} -> {} ({})",
+							code, fromEvents, haveKeyboard ? std::to_string(fromKeyboard) : std::string("n/a"),
+							claimed, gameplay, take ? "tomado" : "nao tomado", why);
+
+						if (!take) {
 							return false;
 						}
 						g_active[code] = it->event;
