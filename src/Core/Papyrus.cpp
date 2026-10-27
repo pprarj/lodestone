@@ -18,6 +18,7 @@
 #include "Incapacitation.h"
 #include "MagicScaling.h"
 #include "MenuPrompt.h"
+#include "PerkPoints.h"
 #include "PluginInfo.h"
 #include "SpellRead.h"
 #include "SpellTomes.h"
@@ -54,6 +55,7 @@ namespace Lodestone::Core::Papyrus
 		ok &= MenuPrompt::RegisterFuncs(a_vm);        // L-U8 - on-screen player prompts
 		ok &= Translation::RegisterFuncs(a_vm);       // L-T2 - translation key resolution
 		ok &= ChordClaim::RegisterFuncs(a_vm);        // L-H1 - claimed key chords
+		ok &= PerkPoints::RegisterFuncs(a_vm);        // L-P1 - perk points and trees
 
 		if (ok) {
 			spdlog::info("Papyrus: all modules registered.");

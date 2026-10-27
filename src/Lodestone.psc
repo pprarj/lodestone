@@ -2238,3 +2238,61 @@ Bool Function PrismaDestroy(String asViewId) global native
 
 ; DEPRECATED - use WebUIRegisterListener instead.
 Bool Function PrismaRegisterListener(String asViewId, String asJsFunction, String asModEvent) global native
+
+; --- Perk points and perk trees (added in DLL 1.35.0) -----------------------
+;
+; Requires Lodestone.GetVersion() >= 1035000 (1.35.0).
+;
+; Spend a perk point the way the vanilla perk menu does, in ONE call, and read a
+; skill's loaded perk tree in batch. Whatever tree is loaded (vanilla, Ordinator,
+; Vokrii, Adamant) is what these functions see; nothing here is tied to a mod.
+; There is NO RemovePerk and NO refund in this API, by design.
+;
+; WHY THERE IS A BATCH: reading a tree perk by perk costs about one frame per
+; call, because Papyrus natives wait for the game's main thread. Each GetPerkTree*
+; function is ONE call for the whole tree.
+
+; The player's unspent perk points: the engine's own count, the same one
+; Game.AddPerkPoints changes and the perk menu shows. 0 is a valid answer.
+; -1 means the player was not available. (Papyrus has no reader for this.)
+Int Function GetPerkPoints() global native
+
+; True when the player owns akPerk. False for None.
+Bool Function HasPerk(Perk akPerk) global native
+
+; True ONLY when the vanilla menu would let the player buy akPerk right now:
+; akPerk is not None, the player does not own it, has at least one perk point,
+; and the perk's own conditions (the prerequisites stored on the perk) pass with
+; the player as subject. False in every other case, and False on any failure.
+; Does not look at the perk tree, only at the perk: a perk that no tree shows is
+; judged by its own conditions alone.
+Bool Function IsPerkEligible(Perk akPerk) global native
+
+; Buys akPerk in one atomic step: re-checks everything IsPerkEligible checks, then
+; adds the perk and spends ONE point. True only if the perk was bought. False
+; changes nothing: no perk added, no point spent. The point is spent only after
+; the engine confirms the perk is owned. Never throws into the VM.
+Bool Function TryBuyPerk(Perk akPerk) global native
+
+; The tree of one skill, read from what is loaded. asSkill is the actor value's
+; ENUM name as the engine spells it ("OneHanded", "Smithing", "Destruction"), not
+; the display text. The four functions below return arrays of the SAME LENGTH, and
+; element i of each belongs to the same perk, in the same order for every call on
+; the same skill. An unknown skill, or one with no tree, gives an EMPTY array,
+; which is also the answer for a failure (an empty array is not a sentinel here).
+; The tree root has no perk and is not listed.
+
+; The perks of the tree, once each.
+Perk[] Function GetPerkTreePerks(String asSkill) global native
+
+; The grid column and row of each perk, as the tree stores them.
+Int[] Function GetPerkTreeGridX(String asSkill) global native
+Int[] Function GetPerkTreeGridY(String asSkill) global native
+
+; The display name of each perk, "" when it has none.
+String[] Function GetPerkTreeNames(String asSkill) global native
+
+; The links of the tree as FLAT PAIRS of indices into the arrays above:
+; [parent0, child0, parent1, child1, ...]. Length is always even. Links from the
+; perkless root are not listed, so a first-tier perk simply has no parent pair.
+Int[] Function GetPerkTreeEdges(String asSkill) global native
