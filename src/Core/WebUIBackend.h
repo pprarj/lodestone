@@ -261,6 +261,7 @@ namespace Lodestone::Core
 	namespace WebUIBackends
 	{
 		IWebUIBackend* PrismaUI();
+		IWebUIBackend* MagelightUI();
 		IWebUIBackend* MeridianUI();
 	}
 }
