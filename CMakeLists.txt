@@ -15,7 +15,7 @@ cmake_minimum_required(VERSION 3.21)
 # DLL version - INDEPENDENT of the mod version on Nexus.
 project(
     Lodestone
-    VERSION 1.35.0
+    VERSION 1.37.0
     LANGUAGES CXX
 )
 
@@ -114,6 +114,7 @@ add_commonlibsse_plugin(
         src/Core/WebUIBridge.cpp
         src/Core/WebUIPanicKeys.cpp
         src/Core/PrismaUIBackend.cpp
+        src/Core/MagelightUIBackend.cpp
         src/Core/MeridianUIBackend.cpp
         src/Core/EquipVeto.cpp
         src/Core/MenuPrompt.cpp
@@ -162,6 +163,10 @@ target_link_libraries(${PROJECT_NAME} PRIVATE safetyhook::safetyhook)
 #   extern/meridianui-api/   TRACKED. Meridian UI's API headers are plain MIT,
 #                            which adds no restriction, so they are vendored
 #                            with their LICENSE-MIT alongside.
+#   extern/magelightui-api/  TRACKED, for the same reason: the one API header of
+#                            Magelight UI is MIT, vendored unmodified with its
+#                            LICENSE-MIT and a README that records the tag, the
+#                            commit and the sha256.
 #   extern/skse-menu-framework/  NOT tracked, and NOT for Prisma UI's reason.
 #                            The SKSE Menu Framework client header is LGPL-2.1
 #                            (QTR-Modding/SKSE-Menu-Framework-3-API), which this
@@ -184,6 +189,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     "${CMAKE_CURRENT_BINARY_DIR}/generated"
     "${CMAKE_CURRENT_SOURCE_DIR}/extern/prismaui-api"
     "${CMAKE_CURRENT_SOURCE_DIR}/extern/meridianui-api"
+    "${CMAKE_CURRENT_SOURCE_DIR}/extern/magelightui-api"
     "${CMAKE_CURRENT_SOURCE_DIR}/extern/skse-menu-framework"
 )
 

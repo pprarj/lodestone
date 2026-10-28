@@ -1219,14 +1219,22 @@ Int Function GetEquipBlockCount() global native
 ; Papyrus-only mod cannot reach one at all, and cannot even ask whether one is
 ; installed.
 ;
-; Two backends are supported: Meridian UI, since DLL 1.21.0, and Prisma UI,
-; since 1.17.0. ONE of them is used per session. Ask WebUIGetBackend at runtime
-; if you want to know which - do not assume, and do not branch on it: ask
-; WebUIHasCapability when the answer decides something.
+; Three backends are supported: Prisma UI, since DLL 1.17.0, Meridian UI, since
+; 1.21.0, and Magelight UI, since 1.36.0. ONE of them is used per session. Ask
+; WebUIGetBackend at runtime if you want to know which - do not assume, and do
+; not branch on it: ask WebUIHasCapability when the answer decides something.
 ;
-; WHICH ONE YOU GET, when both are installed: Meridian UI, unless the user says
-; otherwise with WebUIBackend in Data\SKSE\Plugins\Lodestone.ini. The choice is
-; made once at load and the log line says which won.
+; WHICH ONE YOU GET, when more than one is installed: Prisma UI, then Magelight
+; UI, then Meridian UI, unless the user says otherwise with WebUIBackend in
+; Data\SKSE\Plugins\Lodestone.ini (PrismaUI, MagelightUI or MeridianUI; a name
+; that is not installed leaves the bridge inactive, it does not fall to another).
+; The choice is made once at load and the log line says which won.
+;
+; THAT ORDER CHANGED IN 1.36.0. Until 1.35.x it was Meridian UI first, then
+; Prisma UI. Meridian UI was withdrawn from the Nexus by its author, who points
+; players at Magelight UI, so a player with Prisma UI and Meridian UI both
+; installed now gets Prisma UI where they used to get Meridian UI. A consumer
+; that depends on the old pick sets WebUIBackend, or asks WebUIHasCapability.
 ;
 ; If you need Meridian UI specifically, gate on GetVersion() >= 1021000. If any
 ; backend will do - which is the point of this surface - gate on 1018000 and ask
@@ -1252,8 +1260,9 @@ Int Function GetEquipBlockCount() global native
 ; THERE IS A FOCUS SURFACE SINCE 1.22.0, AND IT ANSWERS DIFFERENTLY PER BACKEND.
 ; WebUIFocusView, WebUIClearFocus and WebUIIsViewFocused give one view the mouse
 ; and keyboard. ASK WebUIHasCapability("view-focus") FIRST: it is True on Meridian
-; UI, True on Prisma UI since 1.27.0 and False there before it, and False with no
-; backend. What focus costs on each backend is written at those functions.
+; UI, True on Prisma UI since 1.27.0 and False there before it, True on Magelight
+; UI, and False with no backend. What focus costs on each backend is written at
+; those functions.
 ;
 ; DO NOT ASK "focus-stack" TO FIND THIS OUT. It answers False on both backends,
 ; before AND after 1.22.0, and it is a different question:
@@ -1327,14 +1336,20 @@ Bool Function WebUIAvailable() global native
 ; does:
 ;
 ;   Prisma UI      Data\PrismaUI\views\<asViewPath>
+;   Magelight UI   Data\Magelight\<asViewPath>
 ;   Meridian UI    Data\MeridianUI\<asViewPath>
 ;
-; So "MyMod/index.html" reads Data\PrismaUI\views\MyMod\index.html under one and
-; Data\MeridianUI\MyMod\index.html under the other.
+; So "MyMod/index.html" reads Data\PrismaUI\views\MyMod\index.html under the
+; first, Data\Magelight\MyMod\index.html under the second and
+; Data\MeridianUI\MyMod\index.html under the third.
 ;
-; SHIP YOUR PAGE TO BOTH ROOTS if you want to work with either backend, and that
-; is the same folder copied twice, not two pages: the same file was measured
-; working unmodified on both.
+; SHIP YOUR PAGE TO EVERY ROOT whose backend you want to work with, and that is
+; the same folder copied, not different pages: the same file was measured working
+; unmodified on Prisma UI and Meridian UI. On Magelight UI the file must exist at
+; that path when you call WebUICreateView - the bridge checks and answers False,
+; with a line in the log, if it does not; and asViewPath may not be absolute, hold
+; a ':' or climb with '..'. A Magelight UI page is served from the Data\Magelight
+; tree together with every other mod's, so name your folder after your mod.
 ;
 ; THE MERIDIAN ROOT CHANGED IN 1.23.0, AND IT IS A HARD BREAK. It used to be
 ; Data\MeridianUI\Lodestone\<asViewPath> - one host owned by this framework, with
@@ -1464,8 +1479,9 @@ Bool Function WebUIDestroyView(String asViewId) global native
 ; for an empty name, or when the slots are full.
 Bool Function WebUIRegisterListener(String asViewId, String asJsFunction, String asModEvent) global native
 
-; Name of the active web UI backend - "MeridianUI" or "PrismaUI" today. Empty
-; string when no backend is present.
+; Name of the active web UI backend - "PrismaUI", "MagelightUI" or "MeridianUI"
+; today, in the order the bridge prefers them. Empty string when no backend is
+; present.
 ;
 ; THIS IS FOR YOUR LOG, NOT FOR YOUR CONTROL FLOW. Do not branch on it. A
 ; consumer that writes If WebUIGetBackend() == "PrismaUI" has moved the vendor
@@ -1491,11 +1507,15 @@ String Function WebUIGetBackend() global native
 ; THE ANSWERS DEPEND ON THE BACKEND, WHICH IS THE ENTIRE POINT OF ASKING HERE
 ; RATHER THAN ASKING WHICH BACKEND IT IS. As of 1.27.0:
 ;
-;                  Prisma UI   Meridian UI
-;   focus-stack    False       False
-;   view-focus     True        True
-;   view-order     True        True
-;   inspector      True        False
+;                  Prisma UI   Meridian UI   Magelight UI (1.36.0)
+;   focus-stack    False       False         False
+;   view-focus     True        True          True
+;   view-order     True        True          asked of the host
+;   inspector      True        False         asked of the host
+;
+; Magelight UI answers "view-order" and "inspector" from the host's own
+; QueryCapability, so they follow the installed Magelight UI rather than this
+; table. The bridge itself uses neither.
 ;
 ; From 1.22.0 to 1.26.x, "view-focus" was False on Prisma UI. A consumer that
 ; already asked needs no change: the answer grew, and the check starts passing.
@@ -1579,6 +1599,22 @@ Int Function WebUIGetListenerSlotsFree() global native
 ; chord on Prisma UI does not touch another mod's Prisma panel - that panel is
 ; not this bridge's to release.
 ;
+; MAGELIGHT UI, SINCE 1.36.0, IS A THIRD SHAPE. Focus there is the host's UI mode:
+; one owner across every mod, which the host raises its own menu for. While a view
+; of this bridge holds it, keys go to the page and NO game input handler sees them,
+; so Lodestone cannot use the input handler it uses on Prisma UI. It reads the
+; panic chord from the keyboard state instead, only while a view of this bridge
+; holds focus and only with the game window in front, and it arms the chord only
+; after it has seen the chord NOT pressed once since focus was given: the key press
+; that brought your panel up reaches your page a few milliseconds after focus, and
+; a chord still held then must not take the focus straight back. Escape belongs to
+; your page on Magelight UI: it does not leave focus and does not hide the view, so
+; a page that wants Escape to close itself must call WebUIClearFocus. If another
+; mod holds Magelight UI's mode, WebUIFocusView is accepted and the bridge refuses
+; it a moment later with a line in the log. Without the Media Keys Fix (Nexus
+; 92948) no key reaches a page on Magelight UI or Prisma UI; that was measured by
+; a sibling project of this tree, not by this bridge.
+;
 ; ONE VIEW AT A TIME. At most one view created through this bridge holds focus,
 ; and a second asker is REFUSED rather than queued. That is Lodestone's rule, not
 ; the backend's, and it is not the same promise as "focus-stack" - see
@@ -1605,8 +1641,8 @@ Int Function WebUIGetListenerSlotsFree() global native
 ; FOCUS IS TAKEN AWAY BEHIND YOUR BACK, ON PURPOSE. Lodestone releases it when a
 ; save is loaded, when a new game starts, and when any menu that pauses the game
 ; opens. The player can also drop it at any moment with the panic chord - the
-; backend's own on Meridian UI, Lodestone's on Prisma UI, the same setting on
-; both - Ctrl+Backspace by default, settable as WebUIPanicKeys in
+; backend's own on Meridian UI, Lodestone's on Prisma UI and on Magelight UI, the
+; same setting on all - Ctrl+Backspace by default, settable as WebUIPanicKeys in
 ; Data\SKSE\Plugins\Lodestone.ini. YOU CANNOT DISABLE THAT, and you should not
 ; want to: it is what stops a broken page from making the game unplayable.
 ;
@@ -1622,8 +1658,9 @@ Int Function WebUIGetListenerSlotsFree() global native
 ; Returns False, immediately and for a reason you can act on, when: no backend is
 ; present, the backend answers False to "view-focus", the view id is unknown, the
 ; view is not ready yet, the view is hidden, or another view already holds focus.
-; On Prisma UI also when Lodestone could not install its panic chord - focus
-; without a way out is what the bridge will not give. The log says so.
+; On Prisma UI and Magelight UI also when Lodestone could not install its panic
+; chord - focus without a way out is what the bridge will not give. The log says
+; so.
 ;
 ; Call it AFTER WebUIShow. A hidden view is refused, because focus on something
 ; the player cannot see is the exact state the panic chord exists to undo.

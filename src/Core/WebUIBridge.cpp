@@ -7,8 +7,8 @@
 // vendor's header.
 //
 // See WebUIBridge.h for why this module exists and why it is Core. See
-// WebUIBackend.h for the seam, and PrismaUIBackend.cpp and MeridianUIBackend.cpp
-// for the two sides of it.
+// WebUIBackend.h for the seam, and PrismaUIBackend.cpp, MagelightUIBackend.cpp and
+// MeridianUIBackend.cpp for the three sides of it.
 
 #include "WebUIBridge.h"
 
@@ -35,14 +35,19 @@ namespace Lodestone::Core::WebUIBridge
 
 		// The backends this build has, in the order the choice walks them.
 		//
-		// MERIDIAN FIRST. The reasoning is not that it is better: it is under
-		// active maintenance, it needs no Media Keys Fix, and its focus is
-		// arbitrated rather than absent. Prisma has the installed base. The
-		// order is an opinion and may be inverted; what it may not be
-		// is undefined, because then the answer would depend on load order.
-		constexpr std::array<IWebUIBackend* (*)(), 2> kBackendOrder = {
-			&WebUIBackends::MeridianUI,
+		// PRISMA, MAGELIGHT, MERIDIAN. Decided by the author on 2026-10-28, after
+		// Meridian UI was withdrawn from the Nexus by its own author, who points
+		// players at Magelight UI. Prisma first because it has the installed base;
+		// Magelight second because it is the maintained successor; Meridian last
+		// and still here, because a player may still have it installed and taking
+		// it out is a separate decision. The order is an opinion and may be
+		// inverted; what it may not be is undefined, because then the answer would
+		// depend on load order. It used to be Meridian first, for being
+		// maintained and needing no Media Keys Fix - the first stopped being true.
+		constexpr std::array<IWebUIBackend* (*)(), 3> kBackendOrder = {
 			&WebUIBackends::PrismaUI,
+			&WebUIBackends::MagelightUI,
+			&WebUIBackends::MeridianUI,
 		};
 
 		// The chosen backend, or null. Resolved once - see Resolve().
