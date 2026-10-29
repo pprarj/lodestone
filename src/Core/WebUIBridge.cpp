@@ -674,6 +674,25 @@ namespace Lodestone::Core::WebUIBridge
 						spdlog::debug("WebUIBridge: view '{}' already exists - create ignored.", viewId);
 						return true;
 					}
+				}
+
+				// A page the backend already knows is missing is refused here, before
+				// anything is reserved, so the caller hears False instead of waiting
+				// for a ready event that cannot come. Outside the lock: it touches
+				// the file system. A failure only the framework can report is still
+				// found out later, in the task below.
+				if (!backend->AcceptsViewPath(viewPath.c_str())) {
+					spdlog::error("WebUIBridge: WebUICreateView refused '{}' - the page '{}' is not "
+								  "usable (view root: {}).",
+						viewId, viewPath, backend->ViewRootHint());
+					return false;
+				}
+
+				{
+					std::scoped_lock lock(g_mutex);
+					if (g_views.find(viewId) != g_views.end()) {
+						return true;
+					}
 					// Reserved before the task runs, so two calls in the same
 					// frame cannot both queue a create. The backend is recorded
 					// now, while it is known, rather than read again later.

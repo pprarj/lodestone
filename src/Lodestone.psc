@@ -1376,6 +1376,10 @@ Bool Function WebUIAvailable() global native
 ; Wait for LodestoneWebUIViewReady, or poll WebUIIsViewReady, before calling
 ; WebUICall.
 ;
+; A failure only the framework can report comes later and is silent to you: after
+; a True, if building the view fails, WebUIGetViewState(asViewId) goes back to -1
+; and no event says so. Poll it if you cannot afford to wait forever.
+;
 ; Idempotent: calling it again with the same id returns True and creates nothing.
 ;
 ; Returns False if no backend is present, if either argument is empty, if

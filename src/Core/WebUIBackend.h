@@ -95,6 +95,21 @@ namespace Lodestone::Core
 		// when a view fails to build.
 		virtual const char* ViewRootHint() const = 0;
 
+		// Whether this backend can already tell, without building anything, that
+		// the page for a_viewPath cannot be served. Called by the bridge BEFORE it
+		// reserves a view id, on whatever thread the Papyrus call arrives on, so
+		// it must not touch the framework's API or any state the game thread owns.
+		//
+		// False means the backend has logged why and the create is refused on the
+		// spot. The default accepts: a backend whose framework gives no way to
+		// know (Prisma UI, Meridian UI) says nothing here and finds out, or not,
+		// when the view is built.
+		virtual bool AcceptsViewPath(const char* a_viewPath) const
+		{
+			(void)a_viewPath;
+			return true;
+		}
+
 		// --- Lifecycle --------------------------------------------------------
 
 		// Looks for the framework and takes hold of its API.

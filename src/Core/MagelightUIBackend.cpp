@@ -578,6 +578,28 @@ namespace Lodestone::Core
 				return "Data\\Magelight for Magelight UI (the view path is appended as given)";
 			}
 
+			// The same resolution and existence check CreateView makes, run on the
+			// caller's thread so the bridge can refuse a missing page before it
+			// reserves the id. It reads no backend state: the path comes from the
+			// executable's folder and the file system only.
+			bool AcceptsViewPath(const char* a_viewPath) const override
+			{
+				const auto path = ResolveViewPath(a_viewPath);
+				if (path.empty()) {
+					spdlog::error("MagelightUIBackend: '{}' is not a plain relative path - a view path may "
+								  "not be absolute, hold ':' or climb with '..'.",
+						a_viewPath ? a_viewPath : "");
+					return false;
+				}
+
+				std::error_code ec;
+				if (!std::filesystem::exists(path, ec)) {
+					spdlog::error("MagelightUIBackend: no such view file: {}", path.string());
+					return false;
+				}
+				return true;
+			}
+
 			// Magelight answers a direct request from an already-loaded
 			// Magelight.dll, so presence is settled here. Registering as a mod is a
 			// separate step that waits for the host (see EnsureRegistered).
