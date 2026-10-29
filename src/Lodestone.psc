@@ -2337,3 +2337,33 @@ String[] Function GetPerkTreeNames(String asSkill) global native
 ; [parent0, child0, parent1, child1, ...]. Length is always even. Links from the
 ; perkless root are not listed, so a first-tier perk simply has no parent pair.
 Int[] Function GetPerkTreeEdges(String asSkill) global native
+
+; --- Perks on an actor instance (added in DLL 1.38.0) ----------------------
+;
+; Requires Lodestone.GetVersion() >= 1038000 (1.38.0).
+;
+; Papyrus Actor.AddPerk is a no-op for NPC actors - it only ever reaches the
+; player - so a follower build that distributes perks cannot use it. These three
+; functions work on the ACTOR REFERENCE's own perk list: the instance, not the
+; actor base form. Two actors that share a base stay independent, and the perk
+; lives in the engine's own actor-instance storage, following the reference.
+;
+; A perk already on the actor base reads as owned (see HasPerkOnActor), and
+; RemovePerkFromActor cannot clear a base-form perk: it only removes the
+; instance copy, so it returns False while the actor still owns the perk.
+;
+; Adds akPerk to akActor's INSTANCE (not the actor base). True only when the
+; engine confirms the actor now owns the perk. False for a None actor or perk,
+; and False if the add did not take. Never throws into the VM.
+Bool Function AddPerkToActor(Actor akActor, Perk akPerk) global native
+;
+; Removes akPerk from akActor's INSTANCE (not the actor base). True only when
+; the actor no longer owns the perk after the call. False when it still owns
+; it - a base-form copy the instance removal cannot reach, for example - and
+; False for a None actor or perk. Never throws into the VM.
+Bool Function RemovePerkFromActor(Actor akActor, Perk akPerk) global native
+;
+; True when akActor owns akPerk, reading instance perks and base-form perks
+; together (the same question the vanilla Actor.HasPerk asks). False for a None
+; actor or perk. Never throws into the VM.
+Bool Function HasPerkOnActor(Actor akActor, Perk akPerk) global native

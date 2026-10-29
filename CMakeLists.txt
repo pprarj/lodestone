@@ -15,7 +15,7 @@ cmake_minimum_required(VERSION 3.21)
 # DLL version - INDEPENDENT of the mod version on Nexus.
 project(
     Lodestone
-    VERSION 1.37.1
+    VERSION 1.38.0
     LANGUAGES CXX
 )
 
@@ -120,6 +120,7 @@ add_commonlibsse_plugin(
         src/Core/MenuPrompt.cpp
         src/Core/ChordClaim.cpp
         src/Core/PerkPoints.cpp
+        src/Core/ActorPerks.cpp
 )
 
 # Drop the generated SKSE declaration. It cannot express the Address Library

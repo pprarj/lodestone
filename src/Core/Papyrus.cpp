@@ -7,6 +7,7 @@
 
 #include "Papyrus.h"
 
+#include "ActorPerks.h"
 #include "BookFramework.h"
 #include "CastTime.h"
 #include "ChordClaim.h"
@@ -56,6 +57,7 @@ namespace Lodestone::Core::Papyrus
 		ok &= Translation::RegisterFuncs(a_vm);       // L-T2 - translation key resolution
 		ok &= ChordClaim::RegisterFuncs(a_vm);        // L-H1 - claimed key chords
 		ok &= PerkPoints::RegisterFuncs(a_vm);        // L-P1 - perk points and trees
+		ok &= ActorPerks::RegisterFuncs(a_vm);        // L-P2 - perks on an actor instance
 
 		if (ok) {
 			spdlog::info("Papyrus: all modules registered.");
