@@ -722,6 +722,64 @@ Int Function GetHighestDetectionLevelExcluding(Actor akActor, Keyword akExcludeT
 ; answer.
 Int Function GetDetectionObserverCountExcluding(Actor akActor, Keyword akExcludeType) global native
 
+; --- Side-aware detection reading (added in DLL 1.39.0) ---------------------
+;
+; The Excluding pair above counts EVERY surviving candidate as an observer,
+; including the allies of akActor: a summoned atronach or a follower of the
+; player reads as "someone is watching me". These two functions walk the same
+; candidates with the same SCALE, FRESHNESS and fixed skips (akActor itself,
+; dead actors, actors the engine flags as not affecting the stealth meter), and
+; add a filter by which SIDE of akActor a candidate is on. aiFlags picks the
+; rules, so the filter can grow without a new function:
+;
+;   1  SkipAllies          A teammate of the player never counts (when akActor
+;                          is the player or a teammate of the player). A
+;                          commanded or summoned actor counts ONLY if it is
+;                          hostile to akActor - a summon that fights you is an
+;                          observer, one that fights for you is not.
+;   2  KeywordSparesHostile akExcludeType excludes only candidates that are NOT
+;                          hostile to akActor. An animal that is attacking you
+;                          still counts; one that is not does not. Without this
+;                          bit akExcludeType excludes every candidate that
+;                          carries it, as in the Excluding pair.
+;   0                      No side rule: the Excluding walk.
+;
+; Add the bits you want (3 = both). A bit this DLL does not know, or a negative
+; aiFlags, answers -1 - never silently ignored.
+;
+; HOSTILITY IS READ NOW, at the moment of the walk, and not remembered. A
+; candidate is hostile to akActor when the engine says it is
+; (Actor.IsHostileToActor, candidate towards akActor) or when it is already in
+; combat with akActor. A reading is therefore as old as the cache (poll-grade,
+; see FRESHNESS above) and a creature that turns hostile shows up on the next
+; reading, not before.
+;
+; LEVEL AND COUNT COME FROM THE SAME READING, unlike the pairs above (see the
+; 1.15.1 note). The DLL moves a new reading into view only when you start a new
+; pair - when you ask for a half you already read - so reading the level and
+; then the count (or the count and then the level) back to back gives two halves
+; of one reading, in either order. Two callers sharing the same (akActor,
+; akExcludeType, aiFlags) share one reading and can move each other's boundary.
+;
+; GetDetectionObserverCountFiltered counts how many candidates that passed the
+; filter currently DETECT akActor (level >= 0); like the Excluding count it is
+; not a line-of-sight count. "Nobody passed the filter" reports the same floor
+; as the pairs above. If you set Lodestone.ini LogDetectionFilter = 1, each
+; reading writes one line to Lodestone.log with how many candidates were skipped
+; as allies and as keyword matches.
+;
+; Requires Lodestone.GetVersion() >= 1039000 (1.39.0).
+
+; The highest detection level any candidate that passes the filter has against
+; akActor. None akActor, no active AI process, unknown aiFlags or cache not yet
+; warm -> -1.
+Int Function GetHighestDetectionLevelFiltered(Actor akActor, Keyword akExcludeType, Int aiFlags) global native
+
+; How many candidates that pass the filter currently detect akActor, from the
+; same reading as GetHighestDetectionLevelFiltered. None akActor, no active AI
+; process, unknown aiFlags or cache not yet warm -> -1. Zero is a real answer.
+Int Function GetDetectionObserverCountFiltered(Actor akActor, Keyword akExcludeType, Int aiFlags) global native
+
 ; --- Incapacitation (added in DLL 1.10.0, usable from 1.11.0) --------------
 ;
 ; WORK IN PROGRESS. Every other module in this file is driven in play by a

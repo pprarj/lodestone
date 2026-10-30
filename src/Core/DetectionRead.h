@@ -123,15 +123,52 @@
 // consumer a third convention to learn on top of the sentinel and the real
 // scale, which the phase this shipped from explicitly ruled out.
 //
+// A THIRD PAIR, SIDE-AWARE (added in DLL 1.39.0). The Excluding pair treats
+// every surviving candidate as an observer, including the target's own
+// allies: a summoned atronach or a follower of the player is "someone
+// watching the player". GetHighestDetectionLevelFiltered and
+// GetDetectionObserverCountFiltered keep the Excluding walk and add a filter
+// by which SIDE of the target a candidate is on, selected by an Int of flag
+// bits so the filter can grow without a new function:
+//
+//   kFlagSkipAllies (1)           teammates of the player (when the target is
+//                                 on the player's side), and commanded or
+//                                 summoned actors that are NOT hostile to the
+//                                 target, never count
+//   kFlagKeywordSparesHostile (2) the keyword excludes only candidates that are
+//                                 NOT hostile to the target - an animal that is
+//                                 attacking still counts, one that is not does
+//                                 not
+//   0                             neither: the Excluding walk
+//
+// Unknown bits answer -1 rather than being ignored, so a later flag can never be
+// silently dropped by an older DLL. Hostility is the engine's own query
+// (Actor::IsHostileToActor, candidate towards target) OR the candidate's current
+// combat target being the target, read at walk time, so it reflects the moment
+// of the walk and not a faction relation memorised earlier.
+//
+// THIS PAIR READS LEVEL AND COUNT FROM THE SAME READING. The refresh lands in a
+// second slot and a native moves it to the one consumers read only at a pair
+// boundary - see SideEntry in the .cpp. The boundary is "this call asks for the
+// half of the pair that was already read", so it holds in either call order. Two
+// consumers reading the same (actor, keyword, flags) share one entry and can
+// move each other's boundary; give each its own flags or keyword if that matters.
+//
+// An opt-in diagnostic line per walk (Lodestone.ini LogDetectionFilter = 1)
+// reports how many candidates were skipped as allies and as keyword matches.
+//
 // PUBLIC API (declared in Lodestone.psc, "Lodestone" script):
 //
 //   Int Function GetHighestDetectionLevel(Actor akActor) global native
 //   Int Function GetDetectionObserverCount(Actor akActor) global native
 //   Int Function GetHighestDetectionLevelExcluding(Actor akActor, Keyword akExcludeType) global native
 //   Int Function GetDetectionObserverCountExcluding(Actor akActor, Keyword akExcludeType) global native
+//   Int Function GetHighestDetectionLevelFiltered(Actor akActor, Keyword akExcludeType, Int aiFlags) global native
+//   Int Function GetDetectionObserverCountFiltered(Actor akActor, Keyword akExcludeType, Int aiFlags) global native
 //
 // Phase L-B1 (detection reading), L-B1b (filterable reading), L-B1b fixes
-// (dead and stealth-meter-exempt candidates, and the honest pair contract)
+// (dead and stealth-meter-exempt candidates, and the honest pair contract),
+// L-B1c (side-aware reading)
 
 #pragma once
 
@@ -139,7 +176,8 @@ namespace Lodestone::Core::DetectionRead
 {
 	// Registers this module's natives on the "Lodestone" script.
 	// Registers: GetHighestDetectionLevel, GetDetectionObserverCount,
-	// GetHighestDetectionLevelExcluding, GetDetectionObserverCountExcluding.
+	// GetHighestDetectionLevelExcluding, GetDetectionObserverCountExcluding,
+	// GetHighestDetectionLevelFiltered, GetDetectionObserverCountFiltered.
 	//
 	// Returns false if any registration failed.
 	bool RegisterFuncs(RE::BSScript::IVirtualMachine* a_vm);
