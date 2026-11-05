@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.21)
+project(BookFrameworkTests LANGUAGES CXX)
+
+enable_testing()
+add_executable(book_framework_test book_framework_test.cpp)
+target_compile_features(book_framework_test PRIVATE cxx_std_23)
+target_include_directories(book_framework_test PRIVATE stubs)
+add_test(NAME book_framework_forwarding COMMAND book_framework_test)

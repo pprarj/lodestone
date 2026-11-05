@@ -11,8 +11,8 @@
 // page text as a raw BSString the record cannot hold. Its implementation is in git
 // history. Production hooks that function directly.
 //
-// EXCEPTION SAFETY: a C++ exception escaping the hook into the engine is undefined
-// behavior. The thunk wraps its body and always calls the original exactly once.
+// Text lookup, conversion and debug logging are guarded. Native forwarding stays
+// outside that handler so an exception from the original cannot cause a retry.
 //
 // Phase L1 - Stage C.2
 
@@ -20,7 +20,10 @@
 
 #include <safetyhook.hpp>
 
+#include <cstddef>
+#include <limits>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -72,7 +75,7 @@ namespace Lodestone::Core::BookFramework
 		SafetyHookInline g_openBookHook{};
 
 		// -------------------------------------------------------------------
-		// Hook: the game's book-open function (behind BookMenu::OpenBookMenu)
+		// Hook: the game's book-open function (behind BookMenu::OpenMenu_Impl)
 		//
 		// The page text arrives as the first argument, a raw BSString. If the book
 		// has stored text, we hand the original the stored string instead; otherwise
@@ -80,51 +83,41 @@ namespace Lodestone::Core::BookFramework
 		// once on every path, so a book with no stored text - or any failure here -
 		// opens exactly as vanilla would.
 		//
-		// The signature mirrors BookMenu::OpenBookMenu (RE/B/BookMenu.h). BSString
-		// caps at 64 KB (its size field is 16-bit); that is the engine's own limit
-		// on book text, not one this module adds.
+		// Reserve the terminator so BSString's 16-bit length increment cannot wrap.
 		//
-		// VALIDATED IN GAME. Two things were unproven here, not one: the address
-		// did not come from the shipped headers, and with eight arguments the
-		// signature was itself a claim. Both were settled by a log-only pass:
-		//
-		//   OPEN '2920, First Seed, v3'   (0x0001ACE5) ref=0x00000000 10189 chars
-		//                                 scale=0.44 defaultPos=false
-		//   OPEN 'The Seed'               (0x0001ACFA) ref=0x00000000  6961 chars
-		//                                 scale=0.59 defaultPos=false
-		//   OPEN 'The Cabin in the Woods' (0x000EF638) ref=0x0300910A  3682 chars
-		//                                 scale=1.00 defaultPos=true
-		//
-		// The description argument held real book markup ("[pagebreak]<p
-		// align=\"center\">...") for every one, which is the first argument
-		// confirming itself. The strongest evidence is the third: `ref` came back
-		// null for both books opened from the inventory and populated for the one
-		// opened from a world reference - so an argument in the middle of the list
-		// behaves the way the header says it should. That is the whole signature
-		// being confirmed, not just its first slot.
+		// VR also retains a ninth NiAVObject* argument until the menu closes;
+		// dropping it makes the engine treat an unrelated stack slot as that object.
 		// -------------------------------------------------------------------
 		struct OpenBookMenuHook
 		{
+			static constexpr std::size_t kMaxTextLength = (std::numeric_limits<RE::BSString::size_type>::max)() - 1;
+
+			template <class... SceneArgs>
 			static void thunk(const RE::BSString& a_description, const RE::ExtraDataList* a_extraList,
 				RE::TESObjectREFR* a_ref, RE::TESObjectBOOK* a_book, const RE::NiPoint3& a_pos,
-				const RE::NiMatrix3& a_rot, float a_scale, bool a_useDefaultPos)
+				const RE::NiMatrix3& a_rot, float a_scale, bool a_useDefaultPos, SceneArgs... a_sceneArgs)
 			{
 				const RE::BSString* desc = &a_description;
-				RE::BSString        replacement;
+				std::optional<RE::BSString> replacement;
 
 				try {
 					if (a_book) {
 						std::string text;
 						if (LookupText(a_book->GetFormID(), text)) {
-							replacement = RE::BSString{ std::string_view{ text } };
-							desc = &replacement;
+							if (text.size() > kMaxTextLength) {
+								spdlog::warn("BookFramework: stored text for 0x{:08X} exceeds {} bytes; using vanilla text.",
+									a_book->GetFormID(), kMaxTextLength);
+							} else {
+								// Construct in place: BSString move assignment does not release its old buffer.
+								desc = &replacement.emplace(std::string_view{ text });
 
-							if (ShouldLogOpens()) {
-								const char* name = a_book->GetName();
-								spdlog::debug("BookFramework: serving stored text for '{}' (0x{:08X}), {} chars.",
-									(name && *name) ? name : "<unnamed>",
-									a_book->GetFormID(),
-									text.size());
+								if (ShouldLogOpens()) {
+									const char* name = a_book->GetName();
+									spdlog::debug("BookFramework: serving stored text for '{}' (0x{:08X}), {} chars.",
+										(name && *name) ? name : "<unnamed>",
+										a_book->GetFormID(),
+										text.size());
+								}
 							}
 						}
 					}
@@ -134,8 +127,8 @@ namespace Lodestone::Core::BookFramework
 				}
 
 				g_openBookHook.call<void, const RE::BSString&, const RE::ExtraDataList*, RE::TESObjectREFR*,
-					RE::TESObjectBOOK*, const RE::NiPoint3&, const RE::NiMatrix3&, float, bool>(
-					*desc, a_extraList, a_ref, a_book, a_pos, a_rot, a_scale, a_useDefaultPos);
+					RE::TESObjectBOOK*, const RE::NiPoint3&, const RE::NiMatrix3&, float, bool, SceneArgs...>(
+					*desc, a_extraList, a_ref, a_book, a_pos, a_rot, a_scale, a_useDefaultPos, a_sceneArgs...);
 			}
 		};
 
@@ -226,27 +219,16 @@ namespace Lodestone::Core::BookFramework
 	void Install()
 	{
 		try {
-			// The game function behind BookMenu::OpenBookMenu. The ID is not in the
-			// shipped 3.5.3 headers; it is taken from the CommonLibSSE-NG source and
-			// is pending in-game confirmation (see BookFramework.h).
+			// The native function behind BookMenu::OpenMenu_Impl.
 			REL::Relocation<std::uintptr_t> target{ REL::RelocationID(50122, 51053) };
 
-			// The guard that used to stand here is gone, along with the branch hook
-			// it protected. It refused to install because the first byte here is
-			// 0x40 - a REX prefix, an ordinary function prologue - which is what
-			// proved in game that this address is a function body and not a call
-			// site. Trampoline::write_branch cannot detour a body.
-			//
-			// BookMenu::OpenBookMenu is a static function, so there is no vtable
-			// slot to swap either. An inline hook is the right instrument:
-			// SafetyHook relocates the displaced prologue and suspends other
-			// threads while patching.
-			//
-			// The address is still UNPROVEN - it came from an outside source, not
-			// from the shipped headers - which is why the thunk only logs for now.
+			// Select the exact native signature before installing the inline hook.
+			auto* thunk = REL::Module::IsVR() ?
+				reinterpret_cast<void*>(&OpenBookMenuHook::thunk<RE::NiAVObject*>) :
+				reinterpret_cast<void*>(&OpenBookMenuHook::thunk<>);
 			g_openBookHook = safetyhook::create_inline(
 				reinterpret_cast<void*>(target.address()),
-				reinterpret_cast<void*>(&OpenBookMenuHook::thunk));
+				thunk);
 
 			if (!g_openBookHook) {
 				spdlog::error("BookFramework: SafetyHook refused to hook the book-open target - "
