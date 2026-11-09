@@ -21,6 +21,7 @@
 #include "MenuPrompt.h"
 #include "PerkPoints.h"
 #include "PluginInfo.h"
+#include "SkillMessage.h"
 #include "SpellRead.h"
 #include "SpellTomes.h"
 #include "Translation.h"
@@ -58,6 +59,7 @@ namespace Lodestone::Core::Papyrus
 		ok &= ChordClaim::RegisterFuncs(a_vm);        // L-H1 - claimed key chords
 		ok &= PerkPoints::RegisterFuncs(a_vm);        // L-P1 - perk points and trees
 		ok &= ActorPerks::RegisterFuncs(a_vm);        // L-P2 - perks on an actor instance
+		ok &= SkillMessage::RegisterFuncs(a_vm);      // L-N1 - skill increase HUD message
 
 		if (ok) {
 			spdlog::info("Papyrus: all modules registered.");

@@ -2425,3 +2425,17 @@ Bool Function RemovePerkFromActor(Actor akActor, Perk akPerk) global native
 ; together (the same question the vanilla Actor.HasPerk asks). False for a None
 ; actor or perk. Never throws into the VM.
 Bool Function HasPerkOnActor(Actor akActor, Perk akPerk) global native
+
+; --- Skill increase message on the HUD (added in DLL 1.40.0) ----------------
+;
+; Requires Lodestone.GetVersion() >= 1040000 (1.40.0).
+;
+; Shows the vanilla "skill increased" HUD message for asName and aiLevel. The text
+; comes from the game setting sSkillIncreased, so it follows the game language.
+; DISPLAY ONLY: it gives NO XP and touches no actor value, skill or PlayerSkills.
+;
+; Returns True when the message was QUEUED for the HUD. Returns False when the
+; setting or the task queue is missing (the caller can fall back to a
+; Debug.Notification); the HUD can still drop a queued message later, which is
+; only visible in Lodestone.log. Never throws into the VM.
+Bool Function ShowSkillIncreaseMessage(String asName, Int aiLevel) global native
