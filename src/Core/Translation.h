@@ -33,6 +33,16 @@ namespace Lodestone::Core::Translation
 	// kPostPostLoad and kInputLoaded).
 	void Install();
 
+	// C++-side lookup of one key, for a module that draws its own text (L-T3).
+	//
+	// Returns the translated text when a_key is in the shared table with a
+	// non-empty value; otherwise returns a_fallback. "Otherwise" covers every
+	// other status - not a key, translator not up yet, absent, deliberately
+	// empty - because the caller wants a usable label, never a blank or a raw
+	// "$KEY". Same table and same lookup as Lodestone.Translate. Call it from a
+	// Papyrus-side or game-thread path, not from inside a render callback.
+	std::string TranslateOr(const std::string& a_key, const std::string& a_fallback);
+
 	// Registers this module's native functions with the Papyrus VM.
 	// Called by Lodestone::Core::Papyrus::Register - never called directly.
 	//

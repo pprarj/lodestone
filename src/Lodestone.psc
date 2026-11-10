@@ -2148,6 +2148,25 @@ String[] Function WebUIGetDeclaredAreas() global native
 ; native is NOT MEASURED. If you go above 128, measure it.
 ;
 ; Gate on GetVersion() >= 1026000.
+;
+; BUTTON LABELS ARE TRANSLATABLE (L-T3). The list's Cancel button and the text
+; box's OK and Cancel buttons read "Cancel", "OK" and "Cancel" unless the load
+; order's translation table holds these keys, and then they read the table's text:
+;
+;   $Lodestone_MenuPrompt_OK        the text box's accept button
+;   $Lodestone_MenuPrompt_Cancel    the Cancel button of both prompts
+;
+; Put them in YOUR OWN Interface\Translations\<YourPlugin>_<LANGUAGE>.txt - the
+; table is one for the whole load order, so any active plugin's file can provide
+; them (see Translate above). No signature changed and nothing has to be called:
+; a mod that defines neither key sees exactly what it saw before. A key that is
+; absent, or present with an empty value, falls back to the English label - never
+; to a blank button or a raw "$KEY". The keys are read when a prompt OPENS, so a
+; language change shows on the next prompt.
+;
+; Needs the next Lodestone version that adds a capability; the number is fixed
+; when it ships. Gate on GetVersion() against that number. Older versions ignore
+; the keys and keep the English labels, which is harmless.
 
 ; Whether a prompt can be shown at all.
 ;

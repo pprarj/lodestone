@@ -261,6 +261,19 @@ namespace Lodestone::Core::Translation
 		}
 	}
 
+	std::string TranslateOr(const std::string& a_key, const std::string& a_fallback)
+	{
+		try {
+			const Lookup lookup = Resolve(a_key);
+			if (lookup.status == kOk) {
+				return lookup.text;
+			}
+		} catch (...) {
+			spdlog::error("Translation: TranslateOr threw.");
+		}
+		return a_fallback;
+	}
+
 	void Install()
 	{
 		// Nothing to do if the file is absent - ParseTranslation reports that

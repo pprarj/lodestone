@@ -19,6 +19,7 @@
 #include "SKSEMenuFramework.h"
 
 #include "MenuPrompt.h"
+#include "Translation.h"
 
 // IVirtualMachine.h only declares ReturnLatentResult; its template body, and
 // the LatentStatus enum, live in NativeLatentFunction.h. That header's
@@ -72,6 +73,14 @@ namespace Lodestone::Core::MenuPrompt
 			std::string              title;
 			std::vector<std::string> entries;
 			Completion               done;
+
+			// Button labels, resolved ONCE in Begin (L-T3). A consumer that
+			// defines $Lodestone_MenuPrompt_OK / _Cancel in its own translation
+			// file gets its text here; with no such key these stay English.
+			// Resolved outside the frame so the render callback never touches
+			// the translator.
+			std::string okLabel{ "OK" };
+			std::string cancelLabel{ "Cancel" };
 
 			// Text prompt only. Owned by the render callback after Begin*
 			// seeds it.
@@ -333,7 +342,7 @@ namespace Lodestone::Core::MenuPrompt
 				IG::Begin(active.title.c_str(), nullptr,
 					IG::ImGuiWindowFlags_NoCollapse | IG::ImGuiWindowFlags_NoSavedSettings);
 
-				if (IG::Button("Cancel")) {
+				if (IG::Button(active.cancelLabel.c_str())) {
 					cancelled = true;
 				}
 				IG::Separator();
@@ -433,11 +442,11 @@ namespace Lodestone::Core::MenuPrompt
 					accepted = true;
 				}
 
-				if (IG::Button("OK")) {
+				if (IG::Button(active.okLabel.c_str())) {
 					accepted = true;
 				}
 				IG::SameLine();
-				if (IG::Button("Cancel")) {
+				if (IG::Button(active.cancelLabel.c_str())) {
 					cancelled = true;
 				}
 
@@ -482,7 +491,9 @@ namespace Lodestone::Core::MenuPrompt
 			active->title = a_title.empty() ? std::string("Lodestone") : std::move(a_title);
 			active->entries = std::move(a_entries);
 			active->done = std::move(a_done);
+			active->cancelLabel = Translation::TranslateOr("$Lodestone_MenuPrompt_Cancel", active->cancelLabel);
 			if (a_kind == Kind::kText) {
+				active->okLabel = Translation::TranslateOr("$Lodestone_MenuPrompt_OK", active->okLabel);
 				CopyTruncated(active->buffer, a_suggestion);
 			}
 
