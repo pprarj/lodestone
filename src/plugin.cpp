@@ -49,6 +49,7 @@
 #include "Core/EquipVeto.h"
 #include "Core/Incapacitation.h"
 #include "Core/Log.h"
+#include "Core/MagicWrite.h"
 #include "Core/MagicScaling.h"
 #include "Core/MenuPrompt.h"
 #include "Core/Papyrus.h"
@@ -109,6 +110,13 @@ namespace
 		// load or a new game. Same shape as MenuPrompt: the module picks its
 		// messages.
 		Lodestone::Core::ChordClaim::HandleSKSEMessage(a_msg);
+
+		// MagicWrite puts back, at kPreLoadGame, what its natives had written
+		// when the save being loaded was made - before the engine reads the
+		// save and rebuilds active effects from those forms. With its log on it
+		// also installs a load order probe at kDataLoaded. Same shape as
+		// MenuPrompt: the module picks its messages.
+		Lodestone::Core::MagicWrite::HandleSKSEMessage(a_msg);
 
 		if (a_msg->type == SKSE::MessagingInterface::kDataLoaded) {
 			Lodestone::Core::CastTime::Install();

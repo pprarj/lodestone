@@ -2466,14 +2466,19 @@ Bool Function ShowSkillIncreaseMessage(String asName, Int aiLevel) global native
 ; These functions write into a Spell or MagicEffect that ALREADY EXISTS -
 ; normally one your own plugin declares empty, so its FormID is there from the
 ; moment the plugin loads and a save resolves references to it on its own. They
-; NEVER create a form, never assign a FormID and keep nothing in the cosave.
+; NEVER create a form and never assign a FormID.
 ;
-; WHAT THEY WRITE IS NOT SAVED. It lives in memory for the rest of the game
-; session and is gone when the game exits: the next launch starts from what your
-; plugin declares. A save loaded later in the SAME session finds whatever was
-; written last, which may come from another playthrough. So write it again on
-; every load: from OnInit for a new game and from OnPlayerLoadGame for a load.
-; Keep the recipe yourself; the form is not where it lives.
+; WHAT THEY WRITE IS PUT BACK BEFORE A SAVE LOADS (DLL 1.41.1 and later). Every
+; save keeps, in Lodestone's cosave, the final state of each form these
+; functions wrote, and when that save is loaded Lodestone writes it back into
+; the forms BEFORE the game reads the save, so an effect that was active when
+; the game saved comes back from the same spell and magic effect it left with.
+; A form written in this game session that the save does not list goes back to
+; what your plugin declares. A save made without it (a new game, a save from
+; before 1.41.1) finds whatever was written last in this session, as in 1.41.0.
+; Still write it again on every load: from OnInit for a new game and from
+; OnPlayerLoadGame for a load. Keep the recipe yourself; the save keeps a copy
+; of the result, not the recipe.
 ;
 ; A target read from a plugin changes for the WHOLE load order for the rest of
 ; the session, like every other in-memory edit of a base form. Write into forms

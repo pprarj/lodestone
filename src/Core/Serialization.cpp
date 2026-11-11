@@ -10,6 +10,7 @@
 
 #include "EquipVeto.h"
 #include "Incapacitation.h"
+#include "MagicWrite.h"
 
 namespace Lodestone::Core::Serialization
 {
@@ -29,6 +30,7 @@ namespace Lodestone::Core::Serialization
 
 			Incapacitation::CosaveSave(a_intfc);
 			EquipVeto::CosaveSave(a_intfc);
+			MagicWrite::CosaveSave(a_intfc);
 		}
 
 		void LoadCallback(SKSE::SerializationInterface* a_intfc)
@@ -42,6 +44,7 @@ namespace Lodestone::Core::Serialization
 			// previous session into a save that predates it.
 			Incapacitation::CosaveLoadBegin();
 			EquipVeto::CosaveLoadBegin();
+			MagicWrite::CosaveLoadBegin();
 
 			std::uint32_t type = 0;
 			std::uint32_t version = 0;
@@ -54,6 +57,10 @@ namespace Lodestone::Core::Serialization
 				}
 
 				if (EquipVeto::CosaveLoadRecord(a_intfc, type)) {
+					continue;
+				}
+
+				if (MagicWrite::CosaveLoadRecord(a_intfc, type, version, length)) {
 					continue;
 				}
 
@@ -70,6 +77,8 @@ namespace Lodestone::Core::Serialization
 			}
 		}
 
+		// MagicWrite has no revert: what it wrote stays in the forms until the
+		// next load decides (kPreLoadGame), or for a new game, as before.
 		void RevertCallback(SKSE::SerializationInterface*)
 		{
 			Incapacitation::CosaveRevert();
@@ -92,7 +101,7 @@ namespace Lodestone::Core::Serialization
 		intfc->SetLoadCallback(LoadCallback);
 		intfc->SetRevertCallback(RevertCallback);
 
-		spdlog::info("Serialization: cosave registered (id 'LDST'), dispatching to Incapacitation and "
-					 "EquipVeto.");
+		spdlog::info("Serialization: cosave registered (id 'LDST'), dispatching to Incapacitation, "
+					 "EquipVeto and MagicWrite.");
 	}
 }
