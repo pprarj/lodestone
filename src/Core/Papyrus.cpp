@@ -18,6 +18,7 @@
 #include "EquipVeto.h"
 #include "Incapacitation.h"
 #include "MagicScaling.h"
+#include "MagicWrite.h"
 #include "MenuPrompt.h"
 #include "PerkPoints.h"
 #include "PluginInfo.h"
@@ -60,6 +61,7 @@ namespace Lodestone::Core::Papyrus
 		ok &= PerkPoints::RegisterFuncs(a_vm);        // L-P1 - perk points and trees
 		ok &= ActorPerks::RegisterFuncs(a_vm);        // L-P2 - perks on an actor instance
 		ok &= SkillMessage::RegisterFuncs(a_vm);      // L-N1 - skill increase HUD message
+		ok &= MagicWrite::RegisterFuncs(a_vm);        // L-F5 - rewrite existing spells and effects
 
 		if (ok) {
 			spdlog::info("Papyrus: all modules registered.");

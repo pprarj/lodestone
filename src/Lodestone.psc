@@ -2458,3 +2458,69 @@ Bool Function HasPerkOnActor(Actor akActor, Perk akPerk) global native
 ; Debug.Notification); the HUD can still drop a queued message later, which is
 ; only visible in Lodestone.log. Never throws into the VM.
 Bool Function ShowSkillIncreaseMessage(String asName, Int aiLevel) global native
+
+; --- Rewriting existing spells and magic effects (added in DLL 1.41.0) ------
+;
+; Requires Lodestone.GetVersion() >= 1041000 (1.41.0).
+;
+; These functions write into a Spell or MagicEffect that ALREADY EXISTS -
+; normally one your own plugin declares empty, so its FormID is there from the
+; moment the plugin loads and a save resolves references to it on its own. They
+; NEVER create a form, never assign a FormID and keep nothing in the cosave.
+;
+; WHAT THEY WRITE IS NOT SAVED. It lives in memory for the rest of the game
+; session and is gone when the game exits: the next launch starts from what your
+; plugin declares. A save loaded later in the SAME session finds whatever was
+; written last, which may come from another playthrough. So write it again on
+; every load: from OnInit for a new game and from OnPlayerLoadGame for a load.
+; Keep the recipe yourself; the form is not where it lives.
+;
+; A target read from a plugin changes for the WHOLE load order for the rest of
+; the session, like every other in-memory edit of a base form. Write into forms
+; you own.
+;
+; Every function returns False, and changes nothing, when the target or the
+; source is None or is not of the expected type. Never throws into the VM.
+;
+; Effect entries are new to the target and never shared with a source, and the
+; entries a spell drops are kept and reused by that same spell, so rewriting a
+; spell with the same recipe on every load does not grow memory. Each call waits
+; for the game's main thread, about one frame.
+;
+; Copies akSource into akTarget: type, casting type, delivery, range, charge time,
+; cast duration, cost and its flags, casting perk, equip slot, menu display
+; object, name, keywords, and the effect list - every entry with its base effect,
+; magnitude, area, duration, cost and conditions. The description is NOT copied.
+; Calling it with akTarget == akSource changes nothing and returns True.
+Bool Function CopySpell(Spell akTarget, Spell akSource) global native
+;
+; Removes every effect entry from akSpell, conditions included. The spell keeps
+; everything else.
+Bool Function ClearSpellEffects(Spell akSpell) global native
+;
+; Appends one effect entry to akSpell, after the ones already there, with NO
+; conditions. False also when aiArea or aiDuration is negative.
+Bool Function AddSpellEffect(Spell akSpell, MagicEffect akEffect, Float afMagnitude, Int aiArea, Int aiDuration, Float afCost) global native
+;
+; True lets the engine calculate the cost from the effects; False keeps the fixed
+; cost the spell holds.
+Bool Function SetSpellAutoCalculate(Spell akSpell, Bool abAutoCalculate) global native
+;
+; Fixes the cost of akSpell at aiCost AND turns automatic calculation off. False
+; when aiCost is negative.
+Bool Function SetSpellCostOverride(Spell akSpell, Int aiCost) global native
+;
+; Copies akSource into akTarget: every field of the effect's data (flags, base
+; cost, archetype, the actor values it works on, associated skill and form,
+; casting type and delivery, projectile, explosion, art, shaders, light, sounds,
+; perk, equip ability, AI values), counter effects, name, menu display object,
+; keywords, magic item description and conditions.
+; Calling it with akTarget == akSource changes nothing and returns True.
+Bool Function CopyMagicEffect(MagicEffect akTarget, MagicEffect akSource) global native
+;
+; Copies only how akSource LOOKS and SOUNDS into akTarget: casting, hit and
+; enchant art, effect and enchant shaders, light, hit and enchant visuals,
+; projectile, explosion, impact data set, image space modifier, dual cast data
+; and scale, casting sound level, sounds and menu display object. Flags,
+; archetype, actor values and costs are left as they are.
+Bool Function CopyMagicEffectAppearance(MagicEffect akTarget, MagicEffect akSource) global native
