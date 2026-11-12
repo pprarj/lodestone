@@ -10,6 +10,7 @@
 #include "ActorPerks.h"
 #include "BookFramework.h"
 #include "CastTime.h"
+#include "CinematicCamera.h"
 #include "ChordClaim.h"
 #include "ChannelInfo.h"
 #include "Detection.h"
@@ -62,6 +63,7 @@ namespace Lodestone::Core::Papyrus
 		ok &= ActorPerks::RegisterFuncs(a_vm);        // L-P2 - perks on an actor instance
 		ok &= SkillMessage::RegisterFuncs(a_vm);      // L-N1 - skill increase HUD message
 		ok &= MagicWrite::RegisterFuncs(a_vm);        // L-F5 - rewrite existing spells and effects
+		ok &= CinematicCamera::RegisterFuncs(a_vm);   // L-C1 - cinematic camera approach
 
 		if (ok) {
 			spdlog::info("Papyrus: all modules registered.");

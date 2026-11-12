@@ -2529,3 +2529,45 @@ Bool Function CopyMagicEffect(MagicEffect akTarget, MagicEffect akSource) global
 ; and scale, casting sound level, sounds and menu display object. Flags,
 ; archetype, actor values and costs are left as they are.
 Bool Function CopyMagicEffectAppearance(MagicEffect akTarget, MagicEffect akSource) global native
+
+; --- Cinematic camera approach (added in DLL 1.42.0) -------------------------
+;
+; Requires Lodestone.GetVersion() >= 1042000 (1.42.0).
+;
+; A camera that starts far and high and closes in on an actor until it reaches
+; the pose the normal third person camera had when it began, then hands the
+; camera back without a jump. The player CONTROL is the caller: Lodestone does not
+; disable controls, restrain, hide or change detection of anyone. The caller does
+; that (DisablePlayerControls, SetRestrained) before the call and undoes it after
+; Lodestone_CinematicDone.
+;
+; Starts an approach to akTarget. The first point is afBack game units BEHIND the
+; target (opposite to the direction it faces) and afUp units above its feet. The
+; camera aims at the target head the whole way and arrives in afSeconds, with soft
+; start and soft end (smoothstep), at the position and rotation the third person
+; camera had when this was called. Returns True when the approach started.
+;
+; Returns False, and changes nothing, for: a None or unloaded akTarget; afSeconds
+; not above 0, or a negative afBack or afUp; the camera not in third person (first
+; person, mount, furniture, free camera already on); an approach already running;
+; a menu that pauses the game or a modal menu open. Never throws into the VM.
+Bool Function CinematicApproach(Actor akTarget, Float afBack, Float afUp, Float afSeconds) global native
+;
+; True while an approach runs, from the call that returned True until the camera
+; has been handed back.
+Bool Function CinematicIsActive() global native
+;
+; Ends a running approach at once and hands the camera back. The ModEvent still
+; arrives, with "stopped". Does nothing when none is running.
+Function CinematicStop() global native
+;
+; The end is ALWAYS announced: ModEvent "Lodestone_CinematicDone", strArg:
+;   done     the time ran out;
+;   stopped  CinematicStop, the target died or unloaded, or something else took
+;            the camera out of the free state;
+;   load     a save was loaded or a new game started (sent after the load);
+;   timeout  afSeconds + 3 real seconds passed without the frames arriving.
+; Register with RegisterForModEvent("Lodestone_CinematicDone", "OnCinematicDone");
+; the handler is Event OnCinematicDone(String asEventName, String asStrArg, Float afNumArg, Form akSender).
+; Lodestone.log gets one line per approach with the reason, frames, ms and
+; handback= (the distance between the last point and the normal camera).

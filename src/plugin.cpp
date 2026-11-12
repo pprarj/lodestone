@@ -46,6 +46,7 @@
 #include "Core/BookFramework.h"
 #include "Core/CastTime.h"
 #include "Core/ChordClaim.h"
+#include "Core/CinematicCamera.h"
 #include "Core/EquipVeto.h"
 #include "Core/Incapacitation.h"
 #include "Core/Log.h"
@@ -118,6 +119,11 @@ namespace
 		// MenuPrompt: the module picks its messages.
 		Lodestone::Core::MagicWrite::HandleSKSEMessage(a_msg);
 
+		// CinematicCamera ends an approach at a load or a new game and tells the
+		// consumer with "load". Same shape as MenuPrompt: the module picks its
+		// messages.
+		Lodestone::Core::CinematicCamera::HandleSKSEMessage(a_msg);
+
 		if (a_msg->type == SKSE::MessagingInterface::kDataLoaded) {
 			Lodestone::Core::CastTime::Install();
 			Lodestone::Core::BookFramework::Install();
@@ -151,6 +157,10 @@ namespace
 			// parsing ours after this point adds to a finished table instead of
 			// racing it.
 			Lodestone::Core::Translation::Install();
+
+			// CinematicCamera swaps two virtuals of the free camera state and the
+			// player's per frame Update. Idle until CinematicApproach is called.
+			Lodestone::Core::CinematicCamera::Install();
 		}
 	}
 }
