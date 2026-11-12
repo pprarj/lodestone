@@ -14,10 +14,18 @@
 // the camera root takes its pose from those two virtuals. The log line measures
 // it - see drift= below.)
 //
-// THE FRAME POINT. The pose is advanced in the PlayerCharacter::Update vtable
-// slot, after the original has run (the same slot Incapacitation hooks; the two
-// chain). Its delta is the frame time the game itself advanced, so a pause does
-// not eat the approach.
+// THE FRAME POINT. The pose is advanced in the free state's own Update virtual
+// (TESCameraState slot 03 SE/AE, 04 VR), before the original runs. 1.42.0 used
+// PlayerCharacter::Update and it never reached the step while the camera was
+// in the free state. That slot is still hooked (chained with Incapacitation):
+// it measures the hand back, catches a camera taken out of the free state and
+// keeps the wall clock safety net. The approach clock adds the engine's frame
+// time (GetSecondsSinceLastFrame), and nothing while a menu pauses the game.
+//
+// THE CONTROLS stay the caller's. Each toggle of the free state is measured on
+// the ControlMap (before and after, and again at the first frame in the free
+// state); any control flag a toggle turned ON that the caller had off is turned
+// back off at once. Nothing the caller left on is turned off.
 //
 // THE PATH. The start is afBack units behind the target, along the opposite of
 // the direction it faces, and afUp above its feet. The end is the pose the
@@ -37,7 +45,14 @@
 // THE LOG LINE. One per approach, always on, written when the hand back has
 // been measured (two frames after it):
 //   CinematicCamera: end reason=<r> start=(x,y,z) end=(x,y,z) frames=N ms=M
-//     handback=<d> drift=<d> qcheck=<q>
+//     handback=<d> drift=<d> qcheck=<q> ticks=T
+// ticks = calls of the free state's Update while the approach ran (frames counts
+// the ones that advanced the pose). Right before it, also always on:
+//   CinematicCamera: measure pcupdate=P ctl before=.. free=.. first=..
+//     fixin=.. backbefore=.. backafter=.. fixout=..
+// pcupdate = calls of the PlayerCharacter::Update hook with the camera in the
+// free state; the ctl values are the enabled control flags (hex, kMovement is
+// bit 0) and fixin/fixout what this file turned back off.
 // handback = distance between the last point written and the position of the
 // camera root two frames after the hand back. drift = largest distance between
 // a point written and the camera root at the next frame while the approach ran
@@ -102,6 +117,25 @@ namespace Lodestone::Core::CinematicCamera
 			const char*     why{ "" };
 			std::uint32_t   handbackTicks{ 0 };
 			double          ms{ 0 };
+			// Calls of the frame point that drives the pose (the free state's
+			// Update), from the start until the end is decided: ticks= on the
+			// end line, always on.
+			std::uint32_t   ticks{ 0 };
+			// Calls of the PlayerCharacter::Update thunk in the same span, with
+			// the camera in the free state: the measure of the 1.42.0 frame point.
+			std::uint32_t   pcTicks{ 0 };
+			// The enabled control flags (ControlMap) around each toggle of the
+			// free state, and what this file turned back off after each one.
+			bool            ctlRead{ false };
+			std::uint32_t   ctlBefore{ 0 };      // before entering the free state
+			std::uint32_t   ctlFree{ 0 };        // right after entering it
+			std::uint32_t   ctlTick{ 0 };       // at the first tick in it
+			bool            ctlTickRead{ false };
+			std::uint32_t   fixIn{ 0 };          // turned back off, entry and first tick
+			bool            ctlBackRead{ false };
+			std::uint32_t   ctlBackBefore{ 0 };  // before handing back
+			std::uint32_t   ctlBackAfter{ 0 };   // right after handing back
+			std::uint32_t   fixOut{ 0 };         // turned back off at the hand back
 		};
 
 		Run g_run;
@@ -245,6 +279,41 @@ namespace Lodestone::Core::CinematicCamera
 			return false;
 		}
 
+		// ---------------------------------------------------------------
+		// controls
+		// ---------------------------------------------------------------
+		// kMovement (bit 0) up to kVATS (bit 11), UserEvents.h USER_EVENT_FLAG.
+		constexpr std::uint32_t kControlMask = 0xFFF;
+
+		bool ReadControls(std::uint32_t& a_out)
+		{
+			const auto* map = RE::ControlMap::GetSingleton();
+			if (!map) {
+				return false;
+			}
+			a_out = map->GetRuntimeData().enabledControls.underlying() & kControlMask;
+			return true;
+		}
+
+		// A toggle of the free state is ours, the controls are the caller's:
+		// whatever the toggle turned ON that was off before it is turned back
+		// off. Nothing the caller left on is ever turned off. Returns the bits.
+		std::uint32_t TurnBackOff(std::uint32_t a_before, std::uint32_t a_after)
+		{
+			const std::uint32_t on = a_after & ~a_before & kControlMask;
+			if (on != 0) {
+				if (auto* map = RE::ControlMap::GetSingleton(); map) {
+					map->ToggleControls(static_cast<RE::UserEvents::USER_EVENT_FLAG>(on), false, false);
+				}
+			}
+			return on;
+		}
+
+		std::string Hex(bool a_read, std::uint32_t a_value)
+		{
+			return a_read ? std::format("0x{:03X}", a_value) : std::string("na");
+		}
+
 		void SendDone(const char* a_reason)
 		{
 			auto* source = SKSE::GetModCallbackEventSource();
@@ -264,16 +333,20 @@ namespace Lodestone::Core::CinematicCamera
 		void FlushLine(bool a_measured, float a_handback)
 		{
 			const auto& r = g_run;
+			spdlog::info("CinematicCamera: measure pcupdate={} ctl before={} free={} first={} fixin=0x{:03X} "
+						 "backbefore={} backafter={} fixout=0x{:03X}",
+				r.pcTicks, Hex(r.ctlRead, r.ctlBefore), Hex(r.ctlRead, r.ctlFree), Hex(r.ctlTickRead, r.ctlTick),
+				r.fixIn, Hex(r.ctlBackRead, r.ctlBackBefore), Hex(r.ctlBackRead, r.ctlBackAfter), r.fixOut);
 			if (a_measured) {
 				spdlog::info("CinematicCamera: end reason={}{}{} start=({:.1f},{:.1f},{:.1f}) end=({:.1f},{:.1f},{:.1f}) "
-							 "frames={} ms={:.0f} handback={:.2f} drift={:.2f} qcheck={:.4f}",
+							 "frames={} ms={:.0f} handback={:.2f} drift={:.2f} qcheck={:.4f} ticks={}",
 					r.reason, *r.why ? " why=" : "", r.why, r.start.x, r.start.y, r.start.z, r.lastWritten.x,
-					r.lastWritten.y, r.lastWritten.z, r.frames, r.ms, a_handback, r.maxDrift, r.qcheck);
+					r.lastWritten.y, r.lastWritten.z, r.frames, r.ms, a_handback, r.maxDrift, r.qcheck, r.ticks);
 			} else {
 				spdlog::info("CinematicCamera: end reason={}{}{} start=({:.1f},{:.1f},{:.1f}) end=({:.1f},{:.1f},{:.1f}) "
-							 "frames={} ms={:.0f} handback=na drift={:.2f} qcheck={:.4f}",
+							 "frames={} ms={:.0f} handback=na drift={:.2f} qcheck={:.4f} ticks={}",
 					r.reason, *r.why ? " why=" : "", r.why, r.start.x, r.start.y, r.start.z, r.lastWritten.x,
-					r.lastWritten.y, r.lastWritten.z, r.frames, r.ms, r.maxDrift, r.qcheck);
+					r.lastWritten.y, r.lastWritten.z, r.frames, r.ms, r.maxDrift, r.qcheck, r.ticks);
 			}
 		}
 
@@ -282,7 +355,13 @@ namespace Lodestone::Core::CinematicCamera
 		{
 			if (a_toggle) {
 				if (auto* cam = RE::PlayerCamera::GetSingleton(); cam && cam->IsInFreeCameraMode()) {
+					auto&      r = g_run;
+					const bool read = ReadControls(r.ctlBackBefore);
 					cam->ToggleFreeCameraMode(false);
+					if (read && ReadControls(r.ctlBackAfter)) {
+						r.ctlBackRead = true;
+						r.fixOut = TurnBackOff(r.ctlBackBefore, r.ctlBackAfter);
+					}
 				}
 			}
 			g_run.phase = Phase::kHandback;
@@ -321,11 +400,40 @@ namespace Lodestone::Core::CinematicCamera
 		// ---------------------------------------------------------------
 		// the per frame step
 		// ---------------------------------------------------------------
-		void Step(float a_delta)
+		// Which frame point is calling. kCamera is the free state's own Update,
+		// which runs while the free state is the current camera state; kPlayer is
+		// PlayerCharacter::Update, which the 1.42.0 field run measured NOT reaching
+		// this file while the camera was in the free state (frames=0 and no
+		// timeout, in eight approaches) and reaching it outside it (camera-taken,
+		// every hand back).
+		enum class Source
+		{
+			kCamera,
+			kPlayer,
+		};
+
+		float FrameDelta()
+		{
+			if (MenuBlocks()) {
+				return 0.0f;  // a pause does not eat the approach
+			}
+			const float dt = RE::GetSecondsSinceLastFrame();
+			if (!(dt > 0.0f)) {
+				return 0.0f;
+			}
+			return dt > 0.25f ? 0.25f : dt;
+		}
+
+		void Step(Source a_source)
 		{
 			auto& r = g_run;
 
 			if (r.phase == Phase::kHandback) {
+				// Out of the free state its Update no longer runs; the player
+				// frame measures the hand back, as in 1.42.0.
+				if (a_source != Source::kPlayer) {
+					return;
+				}
 				if (++r.handbackTicks >= 2) {
 					float hb = -1.0f;
 					if (auto* cam = RE::PlayerCamera::GetSingleton(); cam && cam->cameraRoot) {
@@ -346,6 +454,15 @@ namespace Lodestone::Core::CinematicCamera
 				return;
 			}
 
+			const auto wall = std::chrono::duration<float>(std::chrono::steady_clock::now() - r.wallStart).count();
+			if (a_source == Source::kPlayer) {
+				// Only the safety net from here: the pose is the free state's.
+				if (wall > r.seconds + kSafetySeconds) {
+					Finish("timeout", "", false, true);
+				}
+				return;
+			}
+
 			// The camera root, one frame after the point written: the measure of
 			// whether what we return is what is on screen.
 			if (r.haveLast && cam->cameraRoot) {
@@ -355,9 +472,8 @@ namespace Lodestone::Core::CinematicCamera
 				}
 			}
 
-			const auto  wall = std::chrono::duration<float>(std::chrono::steady_clock::now() - r.wallStart).count();
-			const auto  actorPtr = r.target.get();
-			auto*       actor = actorPtr.get();
+			const auto actorPtr = r.target.get();
+			auto*      actor = actorPtr.get();
 			if (!actor || actor->IsDead() || !actor->Is3DLoaded()) {
 				Finish("stopped", "target-gone", false, true);
 				return;
@@ -367,7 +483,7 @@ namespace Lodestone::Core::CinematicCamera
 				return;
 			}
 
-			r.elapsed += a_delta;
+			r.elapsed += FrameDelta();
 			++r.frames;
 			float t = r.seconds > 0.0f ? r.elapsed / r.seconds : 1.0f;
 			if (t > 1.0f) {
@@ -382,8 +498,8 @@ namespace Lodestone::Core::CinematicCamera
 			r.haveLast = true;
 
 			if (g_logFrames) {
-				spdlog::info("CinematicCamera: frame {} t={:.3f} pos=({:.1f},{:.1f},{:.1f}) drift={:.2f}", r.frames, t,
-					r.curPos.x, r.curPos.y, r.curPos.z, r.maxDrift);
+				spdlog::info("CinematicCamera: frame {} tick {} pc {} t={:.3f} pos=({:.1f},{:.1f},{:.1f}) drift={:.2f}",
+					r.frames, r.ticks, r.pcTicks, t, r.curPos.x, r.curPos.y, r.curPos.z, r.maxDrift);
 			}
 
 			if (t >= 1.0f) {
@@ -403,10 +519,42 @@ namespace Lodestone::Core::CinematicCamera
 					return;
 				}
 				try {
-					Step(a_delta);
+					if (g_run.phase == Phase::kRunning || g_run.phase == Phase::kEnding) {
+						if (auto* cam = RE::PlayerCamera::GetSingleton(); cam && cam->IsInFreeCameraMode()) {
+							++g_run.pcTicks;
+						}
+					}
+					Step(Source::kPlayer);
 				} catch (...) {
-					spdlog::error("CinematicCamera: the frame step threw - swallowed.");
+					spdlog::error("CinematicCamera: the player frame step threw - swallowed.");
 				}
+			}
+			static inline REL::Relocation<decltype(thunk)> func;
+		};
+
+		// The free state's own per frame virtual. The step runs BEFORE the
+		// original, so the getters the engine asks later in the same frame
+		// already return this frame's pose.
+		struct FreeUpdateHook
+		{
+			static void thunk(RE::TESCameraState* a_this, RE::BSTSmartPointer<RE::TESCameraState>& a_nextState)
+			{
+				if (g_run.phase == Phase::kRunning || g_run.phase == Phase::kEnding) {
+					try {
+						auto& r = g_run;
+						++r.ticks;
+						if (r.ticks == 1 && r.phase == Phase::kRunning && r.ctlRead && ReadControls(r.ctlTick)) {
+							// What the free state turned on after the toggle had
+							// returned (its first frame), against the caller's.
+							r.ctlTickRead = true;
+							r.fixIn |= TurnBackOff(r.ctlBefore, r.ctlTick);
+						}
+						Step(Source::kCamera);
+					} catch (...) {
+						spdlog::error("CinematicCamera: the camera frame step threw - swallowed.");
+					}
+				}
+				func(a_this, a_nextState);
 			}
 			static inline REL::Relocation<decltype(thunk)> func;
 		};
@@ -494,7 +642,12 @@ namespace Lodestone::Core::CinematicCamera
 				// Ours from the first frame the free state exists.
 				g_run = run;
 				g_overriding.store(true, std::memory_order_relaxed);
+				const bool ctlRead = ReadControls(g_run.ctlBefore);
 				cam->ToggleFreeCameraMode(false);
+				if (ctlRead && ReadControls(g_run.ctlFree)) {
+					g_run.ctlRead = true;
+					g_run.fixIn = TurnBackOff(g_run.ctlBefore, g_run.ctlFree);
+				}
 				if (!cam->IsInFreeCameraMode()) {
 					g_overriding.store(false, std::memory_order_relaxed);
 					g_run.phase = Phase::kIdle;
@@ -549,17 +702,19 @@ namespace Lodestone::Core::CinematicCamera
 			const bool        vr = REL::Module::IsVR();
 			const std::size_t iRot = vr ? 0x05 : 0x04;
 			const std::size_t iTrans = vr ? 0x06 : 0x05;
+			const std::size_t iFreeUpd = vr ? 0x04 : 0x03;  // TESCameraState::Update, TESCameraState.cpp:21
 			GetRotationHook::func = free.write_vfunc(iRot, GetRotationHook::thunk);
 			GetTranslationHook::func = free.write_vfunc(iTrans, GetTranslationHook::thunk);
+			FreeUpdateHook::func = free.write_vfunc(iFreeUpd, FreeUpdateHook::thunk);
 
 			REL::Relocation<std::uintptr_t> player{ RE::VTABLE_PlayerCharacter[0] };
 			const std::size_t               iUpd = vr ? 0x0AF : 0x0AD;
 			PlayerUpdateHook::func = player.write_vfunc(iUpd, PlayerUpdateHook::thunk);
 
 			g_installed = true;
-			spdlog::info("CinematicCamera: hooks installed (FreeCameraState GetRotation @0x{:X}, GetTranslation @0x{:X}; "
-						 "PlayerCharacter Update @0x{:X}, {} runtime). Idle until CinematicApproach.",
-				iRot, iTrans, iUpd, vr ? "VR" : "SE/AE");
+			spdlog::info("CinematicCamera: hooks installed (FreeCameraState Update @0x{:X}, GetRotation @0x{:X}, "
+						 "GetTranslation @0x{:X}; PlayerCharacter Update @0x{:X}, {} runtime). Idle until CinematicApproach.",
+				iFreeUpd, iRot, iTrans, iUpd, vr ? "VR" : "SE/AE");
 		} catch (const std::exception& e) {
 			spdlog::error("CinematicCamera: failed to install the hooks: {} - CinematicApproach will refuse.", e.what());
 		} catch (...) {

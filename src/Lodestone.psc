@@ -2570,4 +2570,13 @@ Function CinematicStop() global native
 ; Register with RegisterForModEvent("Lodestone_CinematicDone", "OnCinematicDone");
 ; the handler is Event OnCinematicDone(String asEventName, String asStrArg, Float afNumArg, Form akSender).
 ; Lodestone.log gets one line per approach with the reason, frames, ms and
-; handback= (the distance between the last point and the normal camera).
+; handback= (the distance between the last point and the normal camera), and,
+; since 1.42.1, ticks= at the end (how many frames the camera was driven; 1.42.0
+; never advanced the camera, so check GetVersion() >= 1042001 if you rely on it).
+;
+; Controls (1.42.1): entering the free camera state is Lodestone's, the controls
+; stay yours. Lodestone reads the enabled controls before and after each switch of
+; the free camera state; any control your DisablePlayerControls had turned off and
+; the switch turned back on is turned off again at once, and nothing you left on
+; is touched. The log line before the end line ("measure") shows the flags read
+; around each switch. Enable your controls again after Lodestone_CinematicDone.
