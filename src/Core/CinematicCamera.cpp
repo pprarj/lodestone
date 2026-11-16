@@ -61,7 +61,31 @@
 // start (1 means this file reads rotations the way the engine does).
 // LogCinematicCamera = 1 adds one line per frame.
 //
-// Phase L-C1
+// L-C2 - Lodestone.CinematicOrbit. The same machine (free state, the same
+// frame point, the same end, guards, event and log line) with another path:
+// a circle around the target's position at the call, starting afStartAngle
+// degrees from the direction it faces (0 in front, 180 behind) and turning
+// afSweep degrees (positive = clockwise seen from above). The sweep is adjusted
+// by at most 180 degrees so that the last angle is the third person camera's
+// angle around the target; radius and height go from afRadius / afUp to the
+// third person camera's in the last 180 degrees, and the rotation from "look at
+// the head" to the third person rotation in the last 90 degrees. The angle
+// follows smoothstep in time (soft start and soft end). The last frame is the
+// third person pose.
+// abFreezeWorld enters the free state with ToggleFreeCameraMode(true) (the
+// world's time frozen, as the console's tfc 1). Then the orbit clock adds the
+// wall clock between frames, not the engine's frame time. Every end hands back
+// with ToggleFreeCameraMode(false) and, if Main's freezeTime is still set and
+// was not set before the call, clears it. A wall clock watchdog (a thread that
+// queues a task at afSeconds + 3.5 s) ends an orbit even if no frame point runs.
+// The end line gets kind=approach|orbit freeze=0|1 at the end, and an orbit adds
+// one line before the measure line:
+//   CinematicCamera: orbit sweep=<deg> total=<deg> radius=<a>-><b> up=<a>-><b>
+//     freezebefore=.. freezein=.. freezeout=.. unfroze=.. zerodt=N
+// (freeze* = Main freezeTime before the call, after entering, after the hand
+// back; zerodt = steps whose engine frame time was 0).
+//
+// Phase L-C1, L-C2
 
 #include "CinematicCamera.h"
 
@@ -71,6 +95,7 @@
 #include <chrono>
 #include <cmath>
 #include <string>
+#include <thread>
 
 namespace Lodestone::Core::CinematicCamera
 {
@@ -136,11 +161,36 @@ namespace Lodestone::Core::CinematicCamera
 			std::uint32_t   ctlBackBefore{ 0 };  // before handing back
 			std::uint32_t   ctlBackAfter{ 0 };   // right after handing back
 			std::uint32_t   fixOut{ 0 };         // turned back off at the hand back
+			// L-C2 - the orbit. kind=orbit on the end line.
+			bool            orbit{ false };
+			bool            freeze{ false };     // abFreezeWorld
+			Vec3            center;              // target position at the call
+			float           heading{ 0 };        // target GetAngleZ at the call
+			float           a0{ 0 };             // start angle, radians from the heading
+			float           total{ 0 };          // adjusted sweep, radians (signed)
+			float           sweepDeg{ 0 };       // as asked
+			float           r0{ 0 }, r1{ 0 };    // radius at the start and of the third person camera
+			float           up0{ 0 }, up1{ 0 };  // height above the center, same
+			float           sR{ 0 }, sQ{ 0 };    // where radius/height and rotation start to converge
+			std::chrono::steady_clock::time_point lastStepWall;
+			bool            haveStepWall{ false };
+			std::uint32_t   zeroDt{ 0 };
+			int             freezeBefore{ -1 };  // -1 = not read
+			int             freezeIn{ -1 };
+			int             freezeOut{ -1 };
+			bool            unfroze{ false };
 		};
 
 		Run g_run;
 		std::atomic<bool> g_overriding{ false };  // read by the vtable hooks
 		bool g_loadPending = false;
+		// Bumped by every start; the orbit watchdog acts only on its own run.
+		std::atomic<std::uint32_t> g_generation{ 0 };
+		// Main freezeTime was set by an orbit and not yet cleared (load path).
+		bool g_frozeByUs = false;
+
+		constexpr float kPi = 3.14159265358979f;
+		constexpr float kDegToRad = kPi / 180.0f;
 
 		// ---------------------------------------------------------------
 		// maths
@@ -279,6 +329,62 @@ namespace Lodestone::Core::CinematicCamera
 			return false;
 		}
 
+		// Into (-pi, pi].
+		float WrapPi(float a)
+		{
+			a = std::fmod(a + kPi, 2.0f * kPi);
+			if (a <= 0.0f) {
+				a += 2.0f * kPi;
+			}
+			return a - kPi;
+		}
+
+		float Smooth(float t)
+		{
+			if (t <= 0.0f) {
+				return 0.0f;
+			}
+			if (t >= 1.0f) {
+				return 1.0f;
+			}
+			return t * t * (3.0f - 2.0f * t);
+		}
+
+		// 0 until a_from, then smoothstep up to 1 at s = 1.
+		float Window(float a_s, float a_from)
+		{
+			if (a_from >= 1.0f) {
+				return a_s >= 1.0f ? 1.0f : 0.0f;
+			}
+			return Smooth((a_s - a_from) / (1.0f - a_from));
+		}
+
+		// Main freezeTime: 1 / 0, or -1 when Main is not there.
+		int ReadFreeze()
+		{
+			if (auto* main = RE::Main::GetSingleton(); main) {
+				return main->GetRuntimeData().freezeTime ? 1 : 0;
+			}
+			return -1;
+		}
+
+		// After the hand back of an orbit that froze the world: the world runs
+		// again unless it was already frozen before the call.
+		void Unfreeze(Run& a_run)
+		{
+			if (!a_run.freeze) {
+				return;
+			}
+			a_run.freezeOut = ReadFreeze();
+			if (a_run.freezeOut == 1 && a_run.freezeBefore != 1) {
+				if (auto* main = RE::Main::GetSingleton(); main) {
+					main->GetRuntimeData().freezeTime = false;
+					a_run.unfroze = true;
+				}
+			}
+			g_frozeByUs = false;
+		}
+
 		// ---------------------------------------------------------------
 		// controls
 		// ---------------------------------------------------------------
@@ -333,20 +439,28 @@ namespace Lodestone::Core::CinematicCamera
 		void FlushLine(bool a_measured, float a_handback)
 		{
 			const auto& r = g_run;
+			if (r.orbit) {
+				spdlog::info("CinematicCamera: orbit sweep={:.1f} total={:.1f} radius={:.1f}->{:.1f} up={:.1f}->{:.1f} "
+							 "freezebefore={} freezein={} freezeout={} unfroze={} zerodt={}",
+					r.sweepDeg, r.total / kDegToRad, r.r0, r.r1, r.up0, r.up1, r.freezeBefore, r.freezeIn, r.freezeOut,
+					r.unfroze ? 1 : 0, r.zeroDt);
+			}
 			spdlog::info("CinematicCamera: measure pcupdate={} ctl before={} free={} first={} fixin=0x{:03X} "
 						 "backbefore={} backafter={} fixout=0x{:03X}",
 				r.pcTicks, Hex(r.ctlRead, r.ctlBefore), Hex(r.ctlRead, r.ctlFree), Hex(r.ctlTickRead, r.ctlTick),
 				r.fixIn, Hex(r.ctlBackRead, r.ctlBackBefore), Hex(r.ctlBackRead, r.ctlBackAfter), r.fixOut);
 			if (a_measured) {
 				spdlog::info("CinematicCamera: end reason={}{}{} start=({:.1f},{:.1f},{:.1f}) end=({:.1f},{:.1f},{:.1f}) "
-							 "frames={} ms={:.0f} handback={:.2f} drift={:.2f} qcheck={:.4f} ticks={}",
+							 "frames={} ms={:.0f} handback={:.2f} drift={:.2f} qcheck={:.4f} ticks={} kind={} freeze={}",
 					r.reason, *r.why ? " why=" : "", r.why, r.start.x, r.start.y, r.start.z, r.lastWritten.x,
-					r.lastWritten.y, r.lastWritten.z, r.frames, r.ms, a_handback, r.maxDrift, r.qcheck, r.ticks);
+					r.lastWritten.y, r.lastWritten.z, r.frames, r.ms, a_handback, r.maxDrift, r.qcheck, r.ticks,
+					r.orbit ? "orbit" : "approach", r.freeze ? 1 : 0);
 			} else {
 				spdlog::info("CinematicCamera: end reason={}{}{} start=({:.1f},{:.1f},{:.1f}) end=({:.1f},{:.1f},{:.1f}) "
-							 "frames={} ms={:.0f} handback=na drift={:.2f} qcheck={:.4f} ticks={}",
+							 "frames={} ms={:.0f} handback=na drift={:.2f} qcheck={:.4f} ticks={} kind={} freeze={}",
 					r.reason, *r.why ? " why=" : "", r.why, r.start.x, r.start.y, r.start.z, r.lastWritten.x,
-					r.lastWritten.y, r.lastWritten.z, r.frames, r.ms, r.maxDrift, r.qcheck, r.ticks);
+					r.lastWritten.y, r.lastWritten.z, r.frames, r.ms, r.maxDrift, r.qcheck, r.ticks,
+					r.orbit ? "orbit" : "approach", r.freeze ? 1 : 0);
 			}
 		}
 
@@ -364,6 +478,7 @@ namespace Lodestone::Core::CinematicCamera
 					}
 				}
 			}
+			Unfreeze(g_run);  // every end of a frozen orbit, toggle or not
 			g_run.phase = Phase::kHandback;
 			g_run.handbackTicks = 0;
 			g_overriding.store(false, std::memory_order_relaxed);
@@ -422,6 +537,31 @@ namespace Lodestone::Core::CinematicCamera
 				return 0.0f;
 			}
 			return dt > 0.25f ? 0.25f : dt;
+		}
+
+		// The orbit clock. Unfrozen: the engine's frame time, as the approach.
+		// Frozen (abFreezeWorld): the wall clock between two steps, because the
+		// engine's frame time is not known to keep running while the world is
+		// frozen (zerodt= on the orbit line measures it). A pause still stops it.
+		float OrbitDelta(Run& a_run)
+		{
+			const auto now = std::chrono::steady_clock::now();
+			float      real = 0.0f;
+			if (a_run.haveStepWall) {
+				real = std::chrono::duration<float>(now - a_run.lastStepWall).count();
+			}
+			a_run.lastStepWall = now;
+			a_run.haveStepWall = true;
+			if (!(RE::GetSecondsSinceLastFrame() > 0.0f)) {
+				++a_run.zeroDt;
+			}
+			if (!a_run.freeze) {
+				return FrameDelta();
+			}
+			if (MenuBlocks() || !(real > 0.0f)) {
+				return 0.0f;
+			}
+			return real > 0.25f ? 0.25f : real;
 		}
 
 		void Step(Source a_source)
@@ -483,7 +623,7 @@ namespace Lodestone::Core::CinematicCamera
 				return;
 			}
 
-			r.elapsed += FrameDelta();
+			r.elapsed += r.orbit ? OrbitDelta(r) : FrameDelta();
 			++r.frames;
 			float t = r.seconds > 0.0f ? r.elapsed / r.seconds : 1.0f;
 			if (t > 1.0f) {
@@ -491,9 +631,25 @@ namespace Lodestone::Core::CinematicCamera
 			}
 			const float s = t * t * (3.0f - 2.0f * t);
 
-			r.curPos = Lerp(r.start, r.end, s);
-			const auto aim = LookAt(r.curPos, HeadOf(actor));
-			r.curRot = Slerp(aim, r.endRot, s);
+			if (r.orbit) {
+				if (t >= 1.0f) {
+					r.curPos = r.end;  // the third person pose, exactly
+					r.curRot = r.endRot;
+				} else {
+					const float a = r.heading + r.a0 + r.total * s;
+					const float wr = Window(s, r.sR);
+					const float wq = Window(s, r.sQ);
+					const float rad = r.r0 + (r.r1 - r.r0) * wr;
+					const float up = r.up0 + (r.up1 - r.up0) * wr;
+					r.curPos = { r.center.x + std::sin(a) * rad, r.center.y + std::cos(a) * rad, r.center.z + up };
+					const auto aim = LookAt(r.curPos, HeadOf(actor));
+					r.curRot = Slerp(aim, r.endRot, wq);
+				}
+			} else {
+				r.curPos = Lerp(r.start, r.end, s);
+				const auto aim = LookAt(r.curPos, HeadOf(actor));
+				r.curRot = Slerp(aim, r.endRot, s);
+			}
 			r.lastWritten = r.curPos;
 			r.haveLast = true;
 
@@ -669,6 +825,152 @@ namespace Lodestone::Core::CinematicCamera
 			}
 		}
 
+		// L-C2. Ends an orbit from the wall clock even if no frame point runs
+		// (a frozen world is not measured to keep the free state's Update).
+		void StartWatchdog(std::uint32_t a_generation, float a_seconds)
+		{
+			const auto wait = std::chrono::milliseconds(static_cast<long long>((a_seconds + kSafetySeconds + 0.5f) * 1000.0f));
+			std::thread([a_generation, wait]() {
+				std::this_thread::sleep_for(wait);
+				auto* task = SKSE::GetTaskInterface();
+				if (!task) {
+					return;
+				}
+				task->AddTask([a_generation]() {
+					try {
+						if (g_generation.load() != a_generation || !g_run.orbit) {
+							return;  // another run since, or already over
+						}
+						if (g_run.phase == Phase::kRunning) {
+							Finish("timeout", "watchdog", true, true);
+						} else if (g_run.phase == Phase::kEnding) {
+							HandBack(true);  // the queued hand back never ran
+						}
+					} catch (...) {
+						spdlog::error("CinematicCamera: the orbit watchdog threw - swallowed.");
+					}
+				});
+			}).detach();
+		}
+
+		bool CinematicOrbit(RE::StaticFunctionTag*, RE::Actor* a_target, float a_startAngle, float a_sweep, float a_radius,
+			float a_up, float a_seconds, bool a_freezeWorld)
+		{
+			try {
+				if (!g_installed) {
+					spdlog::warn("CinematicCamera: orbit refused - the hooks are not installed.");
+					return false;
+				}
+				if (!a_target || a_target->IsDeleted() || !a_target->Is3DLoaded()) {
+					return false;
+				}
+				if (!(a_seconds > 0.0f) || !(a_radius >= 0.0f) || !(a_up >= 0.0f) || !std::isfinite(a_seconds) ||
+					!std::isfinite(a_radius) || !std::isfinite(a_up) || !std::isfinite(a_startAngle) ||
+					!std::isfinite(a_sweep) || a_sweep == 0.0f) {
+					return false;
+				}
+				if (g_run.phase == Phase::kRunning || g_run.phase == Phase::kEnding) {
+					return false;
+				}
+				if (MenuBlocks()) {
+					return false;
+				}
+				auto* cam = RE::PlayerCamera::GetSingleton();
+				if (!cam || !cam->IsInThirdPerson() || cam->IsInFreeCameraMode() || !cam->currentState ||
+					!cam->cameraRoot) {
+					return false;
+				}
+
+				if (g_run.phase == Phase::kHandback) {
+					FlushLine(false, 0.0f);  // the previous one never got measured
+				}
+
+				Run run;
+				run.orbit = true;
+				run.freeze = a_freezeWorld;
+				run.target = a_target->CreateRefHandle();
+				run.targetID = a_target->GetFormID();
+				run.seconds = a_seconds;
+
+				// The pose to arrive at, from the third person state itself.
+				RE::NiPoint3 tp;
+				cam->currentState->GetTranslation(tp);
+				cam->currentState->GetRotation(run.endRot);
+				run.end = ToVec(tp);
+				run.qcheck = std::fabs(FromMatrix(cam->cameraRoot->world.rotate).Dot(run.endRot));
+
+				// The circle: around the target's position now, angles from the
+				// direction it faces, positive clockwise seen from above (the
+				// direction GetAngleZ grows: 0 north, 90 east).
+				const auto pos = a_target->GetPosition();
+				run.center = { pos.x, pos.y, pos.z };
+				run.heading = a_target->GetAngleZ();
+				run.sweepDeg = a_sweep;
+				run.a0 = a_startAngle * kDegToRad;
+				run.r0 = a_radius;
+				run.up0 = a_up;
+				const float dx = run.end.x - run.center.x;
+				const float dy = run.end.y - run.center.y;
+				run.r1 = std::sqrt(dx * dx + dy * dy);
+				run.up1 = run.end.z - run.center.z;
+				const float sweep = a_sweep * kDegToRad;
+				const float endRel = run.r1 > 1.0f ? WrapPi(std::atan2(dx, dy) - run.heading) : WrapPi(run.a0 + sweep);
+				run.total = sweep + WrapPi(endRel - (run.a0 + sweep));
+				const float absTotal = std::fabs(run.total);
+				run.sR = absTotal > kPi ? 1.0f - kPi / absTotal : 0.0f;
+				run.sQ = absTotal > 0.5f * kPi ? 1.0f - 0.5f * kPi / absTotal : 0.0f;
+
+				const float a = run.heading + run.a0;
+				run.start = { run.center.x + std::sin(a) * run.r0, run.center.y + std::cos(a) * run.r0, run.center.z + run.up0 };
+				run.curPos = run.start;
+				run.curRot = LookAt(run.start, HeadOf(a_target));
+				run.lastWritten = run.start;
+				run.wallStart = std::chrono::steady_clock::now();
+				run.phase = Phase::kRunning;
+				run.freezeBefore = ReadFreeze();
+
+				g_run = run;
+				g_overriding.store(true, std::memory_order_relaxed);
+				const bool ctlRead = ReadControls(g_run.ctlBefore);
+				cam->ToggleFreeCameraMode(a_freezeWorld);
+				if (ctlRead && ReadControls(g_run.ctlFree)) {
+					g_run.ctlRead = true;
+					g_run.fixIn = TurnBackOff(g_run.ctlBefore, g_run.ctlFree);
+				}
+				g_run.freezeIn = ReadFreeze();
+				g_frozeByUs = a_freezeWorld && g_run.freezeIn == 1 && g_run.freezeBefore != 1;
+				if (!cam->IsInFreeCameraMode()) {
+					g_overriding.store(false, std::memory_order_relaxed);
+					Unfreeze(g_run);
+					g_run.phase = Phase::kIdle;
+					spdlog::warn("CinematicCamera: orbit refused - the camera did not enter the free state.");
+					return false;
+				}
+
+				const auto gen = g_generation.fetch_add(1) + 1;
+				StartWatchdog(gen, a_seconds);
+
+				if (g_logFrames) {
+					spdlog::info("CinematicCamera: begin orbit target=0x{:08X} start=({:.1f},{:.1f},{:.1f}) end=({:.1f},{:.1f},{:.1f}) "
+								 "seconds={:.2f} total={:.1f} sR={:.3f} sQ={:.3f} freeze={} freezein={}",
+						g_run.targetID, g_run.start.x, g_run.start.y, g_run.start.z, g_run.end.x, g_run.end.y,
+						g_run.end.z, a_seconds, g_run.total / kDegToRad, g_run.sR, g_run.sQ, a_freezeWorld ? 1 : 0,
+						g_run.freezeIn);
+				}
+				return true;
+			} catch (...) {
+				spdlog::error("CinematicCamera: CinematicOrbit threw - refused.");
+				g_overriding.store(false, std::memory_order_relaxed);
+				if (g_frozeByUs) {
+					if (auto* main = RE::Main::GetSingleton(); main) {
+						main->GetRuntimeData().freezeTime = false;
+					}
+					g_frozeByUs = false;
+				}
+				return false;
+			}
+		}
+
 		bool CinematicIsActive(RE::StaticFunctionTag*)
 		{
 			return g_run.phase == Phase::kRunning || g_run.phase == Phase::kEnding;
@@ -736,6 +1038,7 @@ namespace Lodestone::Core::CinematicCamera
 					g_run.reason = "load";
 					g_run.why = "";
 					g_run.ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - g_run.wallStart).count();
+					Unfreeze(g_run);  // L-C2: a frozen orbit unfreezes on load too
 					FlushLine(false, 0.0f);
 					g_run.phase = Phase::kIdle;
 					g_loadPending = true;
@@ -765,6 +1068,7 @@ namespace Lodestone::Core::CinematicCamera
 		}
 
 		a_vm->RegisterFunction("CinematicApproach", "Lodestone", CinematicApproach);
+		a_vm->RegisterFunction("CinematicOrbit", "Lodestone", CinematicOrbit);
 		a_vm->RegisterFunction("CinematicIsActive", "Lodestone", CinematicIsActive);
 		a_vm->RegisterFunction("CinematicStop", "Lodestone", CinematicStop);
 
@@ -774,7 +1078,7 @@ namespace Lodestone::Core::CinematicCamera
 			}
 		});
 
-		spdlog::info("CinematicCamera: natives registered (CinematicApproach, CinematicIsActive, CinematicStop). "
+		spdlog::info("CinematicCamera: natives registered (CinematicApproach, CinematicOrbit, CinematicIsActive, CinematicStop). "
 					 "Frame log {}.",
 			g_logFrames ? "ON" : "off");
 		return true;

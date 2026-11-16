@@ -205,6 +205,31 @@ namespace Lodestone::Core::PerkPoints
 			return GridAxis(a_skill.c_str(), false);
 		}
 
+		std::vector<float> OffsetAxis(const char* a_skill, bool a_x)
+		{
+			try {
+				std::vector<float> out;
+				for (auto* node : TreeNodes(a_skill ? a_skill : "")) {
+					out.push_back(a_x ? node->horizontalPosition : node->verticalPosition);
+				}
+				return out;
+			} catch (...) {
+				return {};
+			}
+		}
+
+		// Lodestone.GetPerkTreeOffsetX(String) -> Float[]  (HNAM, raw record value)
+		std::vector<float> GetPerkTreeOffsetX(RE::StaticFunctionTag*, RE::BSFixedString a_skill)
+		{
+			return OffsetAxis(a_skill.c_str(), true);
+		}
+
+		// Lodestone.GetPerkTreeOffsetY(String) -> Float[]  (VNAM, raw record value)
+		std::vector<float> GetPerkTreeOffsetY(RE::StaticFunctionTag*, RE::BSFixedString a_skill)
+		{
+			return OffsetAxis(a_skill.c_str(), false);
+		}
+
 		// Lodestone.GetPerkTreeNames(String) -> String[]
 		std::vector<std::string> GetPerkTreeNames(RE::StaticFunctionTag*, RE::BSFixedString a_skill)
 		{
@@ -263,6 +288,8 @@ namespace Lodestone::Core::PerkPoints
 		a_vm->RegisterFunction("GetPerkTreePerks", "Lodestone", GetPerkTreePerks);
 		a_vm->RegisterFunction("GetPerkTreeGridX", "Lodestone", GetPerkTreeGridX);
 		a_vm->RegisterFunction("GetPerkTreeGridY", "Lodestone", GetPerkTreeGridY);
+		a_vm->RegisterFunction("GetPerkTreeOffsetX", "Lodestone", GetPerkTreeOffsetX);
+		a_vm->RegisterFunction("GetPerkTreeOffsetY", "Lodestone", GetPerkTreeOffsetY);
 		a_vm->RegisterFunction("GetPerkTreeNames", "Lodestone", GetPerkTreeNames);
 		a_vm->RegisterFunction("GetPerkTreeEdges", "Lodestone", GetPerkTreeEdges);
 

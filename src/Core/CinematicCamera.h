@@ -6,6 +6,8 @@
 //
 // Natives (Lodestone.psc, DLL 1.42.0):
 //   CinematicApproach(akTarget, afBack, afUp, afSeconds) -> Bool
+//   CinematicOrbit(akTarget, afStartAngle, afSweep, afRadius, afUp, afSeconds,
+//     abFreezeWorld = False) -> Bool   (DLL 1.43.0, L-C2)
 //   CinematicIsActive() -> Bool
 //   CinematicStop()
 // ModEvent "Lodestone_CinematicDone", strArg = done | stopped | load | timeout.

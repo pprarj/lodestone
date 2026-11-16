@@ -2407,6 +2407,10 @@ Perk[] Function GetPerkTreePerks(String asSkill) global native
 Int[] Function GetPerkTreeGridX(String asSkill) global native
 Int[] Function GetPerkTreeGridY(String asSkill) global native
 
+; The fine position of each perk's node (HNAM, VNAM), raw record values (DLL 1.44.0).
+Float[] Function GetPerkTreeOffsetX(String asSkill) global native
+Float[] Function GetPerkTreeOffsetY(String asSkill) global native
+
 ; The display name of each perk, "" when it has none.
 String[] Function GetPerkTreeNames(String asSkill) global native
 
@@ -2580,3 +2584,47 @@ Function CinematicStop() global native
 ; the switch turned back on is turned off again at once, and nothing you left on
 ; is touched. The log line before the end line ("measure") shows the flags read
 ; around each switch. Enable your controls again after Lodestone_CinematicDone.
+
+; --- Cinematic camera orbit (added in DLL 1.43.0) ----------------------------
+;
+; Requires Lodestone.GetVersion() >= 1043000 (1.43.0).
+;
+; A camera that circles akTarget and ends in the pose the normal third person
+; camera had when it began, then hands the camera back without a jump. It shares
+; everything with CinematicApproach: CinematicIsActive, CinematicStop, the ModEvent
+; Lodestone_CinematicDone with the same strArg values, the controls rule above,
+; and only one of the two runs at a time.
+;
+; ANGLES, in degrees, around the target's position at the call, measured from
+; the direction the target faces: 0 is in front of it, 90 at its right, 180
+; behind it. afStartAngle is where the camera starts. afSweep is how far it turns,
+; signed: positive is clockwise seen from above (front, right, back, left),
+; negative counterclockwise; 540 is one turn and a half. The last angle is always
+; the third person camera's (behind the target, near 180), so the sweep is
+; adjusted by at most 180 degrees to land there: from 0, a sweep of 540 lands
+; behind with almost no adjustment.
+; The camera starts afRadius game units from the target's position, afUp units
+; above its feet. Radius and height go to the third person camera's distance and
+; height over the last 180 degrees; the camera aims at the target's head the
+; whole way and turns into the third person rotation over the last 90 degrees.
+; Soft start and soft end (smoothstep in time). Arrives in afSeconds.
+;
+; NO COLLISION: the free camera passes through trees, rocks and walls. Choose
+; afRadius and afUp for the place.
+;
+; abFreezeWorld = True freezes the world while the camera orbits, as the console's
+; "tfc 1" (actors and time stop; an enemy near the player does not attack). Every
+; end (done, stopped, load, timeout) unfreezes it. The timeout counts real
+; seconds (afSeconds + 3) and ends the orbit even if the frames stop. Whether
+; Papyrus (Utility.Wait, ModEvents) keeps running while the world is frozen is
+; not guaranteed here: test it in your mod before relying on a Wait meanwhile.
+;
+; Returns False, and changes nothing, for the cases CinematicApproach refuses
+; (None or unloaded akTarget, afSeconds not above 0, negative afRadius or afUp,
+; not in third person, a camera already running, a pausing or modal menu), and for
+; afSweep = 0. Never throws into the VM.
+Bool Function CinematicOrbit(Actor akTarget, Float afStartAngle, Float afSweep, Float afRadius, Float afUp, Float afSeconds, Bool abFreezeWorld = False) global native
+;
+; The end line in Lodestone.log (since 1.43.0, for both) ends with kind=approach or
+; kind=orbit and freeze=0 or 1; an orbit adds one "orbit" line before the
+; "measure" line.
