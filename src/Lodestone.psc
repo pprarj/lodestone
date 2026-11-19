@@ -1566,6 +1566,12 @@ String Function WebUIGetBackend() global native
 ; Added in 1.22.0:
 ;   "view-focus"   can ONE view be given the mouse and keyboard
 ;
+; Added in 1.50.0:
+;   "animation-events"  can WebUIRegisterAnimationEvents hand the player's
+;                       animation events to a page. Answered by Lodestone, not
+;                       by the backend: True on all three backends on SE and AE,
+;                       False on VR and when Lodestone could not listen.
+;
 ; THE ANSWERS DEPEND ON THE BACKEND, WHICH IS THE ENTIRE POINT OF ASKING HERE
 ; RATHER THAN ASKING WHICH BACKEND IT IS. As of 1.27.0:
 ;
@@ -2081,6 +2087,151 @@ String[] Function WebUIGetDeclaredAreas() global native
 ; THE BRIDGE DOES NOT ARBITRATE ANY OF THIS. It stores what you tell it, hands
 ; back the set, names the cause in the pulse, and says out loud which way the
 ; convention falls. Nobody is moved by anything but their own code.
+
+; --- Player animation events straight to a page, added in 1.50.0 ---------------
+;
+; Hands some of the player's animation graph events, by name, to one JS function
+; of one view, WITHOUT PASSING THROUGH PAPYRUS. A script that hears an animation
+; event and answers it with WebUICall waits for the script queue twice, once for
+; the event and once for the call, and on a large load order that wait was
+; measured at hundreds of milliseconds. With this, the event goes from the
+; player's animation graph to the page on the next frame at the latest, and your
+; script is not involved after the request.
+;
+; WHAT THE PAGE RECEIVES. One call to window[asJsFunction] per event, with one
+; string argument holding JSON:
+;
+;   {"event":"WeaponDraw","t":1763500000123.456,"seq":17}
+;
+;   event   the event name as the animation graph spelled it. Compare it
+;           case-insensitively: the names are matched that way, and the spelling
+;           can differ from the one in your list.
+;   t       when Lodestone saw the event, in milliseconds since 1970-01-01 UTC,
+;           the clock and unit of Date.now() in the page. Date.now() - t is how
+;           late the page heard it.
+;   seq     1, 2, 3... per request, counting only the calls made. A gap means a
+;           call was not delivered; the count restarts with a new request.
+;
+; WHAT IT COVERS. The player only - not a mount, not any other actor. A name not
+; in the list is not sent. Event payloads and graph variables are not sent.
+;
+; HOW LONG A REQUEST LIVES.
+;   - It survives every change of the player's animation graph (a mount, the
+;     werewolf, a race change, the player's 3D being rebuilt), because Lodestone
+;     listens where the game itself delivers the player's events, not on one
+;     particular graph.
+;   - It survives WebUIHide and WebUIShow. While the view is hidden NOTHING is
+;     sent and nothing is queued: a hidden page does not run, and an event kept
+;     for later would arrive with a stale time. The first event after WebUIShow
+;     is sent.
+;   - It ends with WebUIDestroyView of its view, with
+;     WebUIUnregisterAnimationEvents, and on EVERY load of a save and on a new
+;     game, the same save included. Ask again from OnPlayerLoadGame.
+;
+; Registering the same view and function again replaces the list rather than
+; adding a second request, so asking again after a load is safe.
+;
+; LIMITS: 4 requests per view, 16 across all views and mods, 32 names per
+; request. A request beyond a limit is refused and logged.
+;
+; Returns False, and logs why, when no backend is present, when the view is
+; unknown or its page is not ready yet, when the function name is empty, when
+; the list is empty (empty names do not count), when a limit is reached, and when
+; this session cannot listen to the player's animation events at all - VR, or a
+; game build where the check Lodestone makes before listening failed. Ask
+; WebUIHasCapability("animation-events") to know that last one in advance.
+;
+; Lodestone.log gets one line per request and one per end, the end line with how
+; many events were sent and the measured delay between the event and the call
+; to the page. A line per event is written only with LogWebUIEvents = 1 in
+; Lodestone.ini, which also logs, with its argument, every call a page makes back
+; through WebUIRegisterListener - enough for a test page to report what it measured
+; without a plugin of its own.
+;
+; Needs Lodestone.GetVersion() >= 1050000.
+Bool Function WebUIRegisterAnimationEvents(String asViewId, String asJsFunction, String[] asEvents) global native
+
+; Ends the request of that view and JS function, or every request of the view
+; when asJsFunction is "". Returns True when a request was ended, False when
+; there was none to end. Needs Lodestone.GetVersion() >= 1050000.
+Bool Function WebUIUnregisterAnimationEvents(String asViewId, String asJsFunction) global native
+
+; --- When a player animation event happened, added in 1.51.0 -------------------
+;
+; Tells a script how long ago a named event of the player's animation graph
+; really happened, for timing two events against each other. An OnAnimationEvent
+; handler runs when the script queue reaches it, which on a large load order is
+; hundreds of milliseconds late and can be out of order: the handler of a later
+; event can run before the handler of an earlier one. Measuring "release minus
+; drawn" by when the handlers ran measures the queue. The time here is taken
+; where the event happens, the same moment WebUIRegisterAnimationEvents sends to
+; a page as "t", and is kept until you ask.
+;
+; Needs no web UI backend and no view. Works with the panel off.
+;
+; HOW TO USE IT.
+;   1. Ask for the names once, and again from OnPlayerLoadGame:
+;        Lodestone.RegisterPlayerAnimationEventTimes("MyMod", names)
+;   2. In the handler of the later event, ask for the interval:
+;        Float held = Lodestone.GetPlayerAnimationEventInterval("bowDrawn", "arrowRelease")
+;      held is in seconds, from the latest bowDrawn at or before the latest
+;      arrowRelease to that arrowRelease - right however late the handler runs,
+;      even when the player has drawn again since.
+;
+; THE CLOCK. Seconds, as Float, from a monotonic clock read when the event
+; happened; an age is measured when you ask. The functions do not wait for a
+; frame, so two questions in a row are microseconds apart - but a script can be
+; suspended between any two lines, so for the time between two events use
+; GetPlayerAnimationEventInterval, which reads both under one lock, not the
+; difference of two ages.
+;
+; WHEN THERE IS NO TIME TO GIVE (Float answers):
+;   -1.0  the name is tracked and has not happened since it started being
+;         tracked (for the interval: either name, or no asFirst at or before
+;         the latest asSecond among the last 8 of asFirst).
+;   -2.0  no open request lists the name, or this session cannot hear the
+;         player's animation events (VR, or the check Lodestone makes before
+;         listening failed - the Register call says so by returning False).
+; An age and an interval are never negative otherwise.
+;
+; WHAT IT COVERS. The player only. Names are matched without regard to case.
+; Each name keeps its last 8 moments and a count; several mods asking for the
+; same name share them.
+;
+; HOW LONG A REQUEST LIVES. Through every change of the player's animation graph
+; (a mount, the werewolf, a race change, the 3D being rebuilt). It ends with
+; UnregisterPlayerAnimationEventTimes and on EVERY load of a save and on a new
+; game, the same save included, and the kept moments go with it: ask again from
+; OnPlayerLoadGame. Registering the same owner again replaces the list and keeps
+; the moments of the names still in it, so asking again is safe.
+;
+; LIMITS: 8 requests (owners) in all, 32 names per request. Beyond a limit the
+; call returns False and logs why. Lodestone.log gets one line per request and
+; one per end, the end line with how many of each event were seen; a line per
+; event only with LogWebUIEvents = 1 in Lodestone.ini.
+;
+; Needs Lodestone.GetVersion() >= 1051000.
+
+; Starts timing asEvents for asOwner, a name of your choice (your mod's). True
+; when the request is open. False, with the reason in Lodestone.log, for an empty
+; owner, an empty list (empty names do not count), more than 32 names, 8 owners
+; already open, and a session that cannot hear the player's animation events.
+Bool Function RegisterPlayerAnimationEventTimes(String asOwner, String[] asEvents) global native
+
+; Ends the request of asOwner. True when there was one to end.
+Bool Function UnregisterPlayerAnimationEventTimes(String asOwner) global native
+
+; Seconds since asEvent last happened, measured now. -1.0 never since it started
+; being tracked, -2.0 not tracked.
+Float Function GetPlayerAnimationEventAge(String asEvent) global native
+
+; Seconds from the latest asFirst at or before the latest asSecond, to that
+; asSecond. -1.0 when there is no such pair, -2.0 when either is not tracked.
+Float Function GetPlayerAnimationEventInterval(String asFirst, String asSecond) global native
+
+; How many times asEvent happened since it started being tracked. Compare with
+; the value you saw last to know whether a new one happened. -1 not tracked.
+Int Function GetPlayerAnimationEventCount(String asEvent) global native
 
 
 
@@ -2628,3 +2779,10 @@ Bool Function CinematicOrbit(Actor akTarget, Float afStartAngle, Float afSweep, 
 ; The end line in Lodestone.log (since 1.43.0, for both) ends with kind=approach or
 ; kind=orbit and freeze=0 or 1; an orbit adds one "orbit" line before the
 ; "measure" line.
+
+; --- Player portrait (added in DLL 1.49.0) -----------------------------------
+;
+; Requires Lodestone.GetVersion() >= 1049000 (1.49.0).
+;
+; Latent (waits a few frames): writes a front PNG of the player's head to Data\PrismaUI\views\<asFolder>\ and Data\Magelight\<asFolder>\ under a new name and returns that name, "" when refused (first person, other camera states, a pausing menu, a capture in flight) or failed - the reason is in Lodestone.log.
+String Function CapturePlayerPortrait(String asFolder, Int aiSize = 256) global native

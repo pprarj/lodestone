@@ -151,4 +151,9 @@ namespace Lodestone::Core::WebUIBridge
 	//
 	// Returns false if any registration failed.
 	bool RegisterFuncs(RE::BSScript::IVirtualMachine* a_vm);
+
+	// Whether the player's animation event hook was written this session
+	// (kDataLoaded; False on VR and when the table check refused it). The
+	// AnimationEventTimes module (1.51.0) rides the same hook and asks here.
+	bool PlayerAnimationHookInstalled();
 }

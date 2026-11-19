@@ -54,6 +54,8 @@
 #include "Core/MagicScaling.h"
 #include "Core/MenuPrompt.h"
 #include "Core/Papyrus.h"
+#include "Core/AnimationEventTimes.h"
+#include "Core/Portrait.h"
 #include "Core/Serialization.h"
 #include "Core/SpellTomes.h"
 #include "Core/Translation.h"
@@ -124,6 +126,14 @@ namespace
 		// messages.
 		Lodestone::Core::CinematicCamera::HandleSKSEMessage(a_msg);
 
+		// Portrait answers "" to a script still waiting for a capture when a
+		// save is loaded or a new game starts. Same shape as MenuPrompt.
+		Lodestone::Core::Portrait::HandleSKSEMessage(a_msg);
+
+		// AnimationEventTimes ends every request at a load or a new game; the
+		// script asks again from OnPlayerLoadGame. Same shape as MenuPrompt.
+		Lodestone::Core::AnimationEventTimes::HandleSKSEMessage(a_msg);
+
 		if (a_msg->type == SKSE::MessagingInterface::kDataLoaded) {
 			Lodestone::Core::CastTime::Install();
 			Lodestone::Core::BookFramework::Install();
@@ -161,6 +171,11 @@ namespace
 			// CinematicCamera swaps two virtuals of the free camera state and the
 			// player's per frame Update. Idle until CinematicApproach is called.
 			Lodestone::Core::CinematicCamera::Install();
+
+			// Portrait: a mid hook at the entry of the frame swap, three
+			// virtuals of the plain third person state and the worldToCam
+			// rebuild function. Idle until CapturePlayerPortrait is called.
+			Lodestone::Core::Portrait::Install();
 		}
 	}
 }

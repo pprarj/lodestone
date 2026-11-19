@@ -8,6 +8,7 @@
 #include "Papyrus.h"
 
 #include "ActorPerks.h"
+#include "AnimationEventTimes.h"
 #include "BookFramework.h"
 #include "CastTime.h"
 #include "CinematicCamera.h"
@@ -23,6 +24,7 @@
 #include "MenuPrompt.h"
 #include "PerkPoints.h"
 #include "PluginInfo.h"
+#include "Portrait.h"
 #include "SkillMessage.h"
 #include "SpellRead.h"
 #include "SpellTomes.h"
@@ -64,6 +66,8 @@ namespace Lodestone::Core::Papyrus
 		ok &= SkillMessage::RegisterFuncs(a_vm);      // L-N1 - skill increase HUD message
 		ok &= MagicWrite::RegisterFuncs(a_vm);        // L-F5 - rewrite existing spells and effects
 		ok &= CinematicCamera::RegisterFuncs(a_vm);   // L-C1 - cinematic camera approach
+		ok &= Portrait::RegisterFuncs(a_vm);          // L-P4 - player portrait (latent)
+		ok &= AnimationEventTimes::RegisterFuncs(a_vm); // L-W2 - player animation event times
 
 		if (ok) {
 			spdlog::info("Papyrus: all modules registered.");

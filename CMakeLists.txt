@@ -15,7 +15,7 @@ cmake_minimum_required(VERSION 3.21)
 # DLL version - INDEPENDENT of the mod version on Nexus.
 project(
     Lodestone
-    VERSION 1.44.0
+    VERSION 1.51.0
     LANGUAGES CXX
 )
 
@@ -124,6 +124,8 @@ add_commonlibsse_plugin(
         src/Core/SkillMessage.cpp
         src/Core/MagicWrite.cpp
         src/Core/CinematicCamera.cpp
+        src/Core/Portrait.cpp
+        src/Core/AnimationEventTimes.cpp
 )
 
 # Drop the generated SKSE declaration. It cannot express the Address Library

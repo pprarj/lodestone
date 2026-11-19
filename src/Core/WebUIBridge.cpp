@@ -12,17 +12,23 @@
 
 #include "WebUIBridge.h"
 
+#include "AnimationEventTimes.h"
 #include "Config.h"
 #include "WebUIBackend.h"
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <format>
 #include <functional>
 #include <mutex>
 #include <string>
+#include <string_view>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -35,7 +41,7 @@ namespace Lodestone::Core::WebUIBridge
 
 		// The backends this build has, in the order the choice walks them.
 		//
-		// PRISMA, MAGELIGHT, MERIDIAN. Decided by the author on 2026-10-28, after
+		// PRISMA, MAGELIGHT, MERIDIAN. Decided on 2026-10-28, after
 		// Meridian UI was withdrawn from the Nexus by its own author, who points
 		// players at Magelight UI. Prisma first because it has the installed base;
 		// Magelight second because it is the maintained successor; Meridian last
@@ -618,6 +624,474 @@ namespace Lodestone::Core::WebUIBridge
 			spdlog::info("WebUIBridge: watching menu transitions to release view focus.");
 		}
 
+		// --- Player animation events, straight to a page (1.50.0) ---------------
+		//
+		// A script asks for some of the player's animation graph events, by name,
+		// to be handed to one JS function of one view. From then on each such
+		// event reaches the page without passing through the Papyrus VM: the
+		// graph event is seen here, a call is queued on the main thread, and the
+		// backend delivers it. The VM is the queue this exists to avoid - a
+		// WebUICall made from a script that reacts to an animation event waits
+		// behind every other script in the load order twice, once for the event
+		// and once for the call, and on a large load order that was measured at
+		// hundreds of milliseconds.
+		//
+		// WHERE THE EVENT IS SEEN: THE PLAYER'S OWN SINK, NOT ONE OF OURS. The
+		// player, as every reference, is a BSTEventSink<BSAnimationGraphEvent>,
+		// and the engine registers it on every graph it builds for it - the
+		// first one, the one after a load, a race change, the werewolf. A sink of
+		// our own added with AddAnimationGraphEventSink would be attached to the
+		// graphs that exist at the moment of the call and would silently stop
+		// hearing anything at the next swap, with nothing in any log. So the
+		// ProcessEvent slot of that base in PlayerCharacter's vtable is swapped
+		// once, at kDataLoaded, and it is the player's table, not Character's, so
+		// no other actor's events pass through here. With no request open the
+		// thunk is one relaxed load and the original.
+		//
+		// THE TABLE INDEX IS CHECKED, NOT ASSUMED. [2] is the third base of
+		// TESObjectREFR in the header (TESForm, BSHandleRefObject, then this
+		// sink); the header does not number the tables. Before writing, the
+		// vptr of the player's own sink subobject is read and compared with the
+		// table about to be written. Different: nothing is written, the line
+		// says why, and "animation-events" answers False.
+		//
+		// THE DISPATCH GOES THROUGH DispatchToGame LIKE EVERY OTHER CALL INTO A
+		// BACKEND. The thread an animation event arrives on is not promised by
+		// anything we read; the hook counts how many arrived off the main thread
+		// and the stop line says it. The queue is drained once per frame, so the
+		// call reaches the backend at most one frame after the event; the stop
+		// line also gives the measured delay between the two.
+
+		// How many requests one view may hold, and the whole tree. A request is
+		// one (view, JS function) pair with its list of event names.
+		constexpr std::size_t kAnimMaxRequestsPerView = 4;
+		constexpr std::size_t kAnimMaxRequests        = 16;
+		constexpr std::size_t kAnimMaxEventsPerRequest = 32;
+
+		// Samples of the event-to-call delay kept per request for the stop line.
+		constexpr std::size_t kAnimMaxDelaySamples = 4096;
+
+		// The capability name. Answered by the bridge, not by the backend: the
+		// delivery is an ordinary Call, which every backend has, and what can be
+		// missing is the hook - on VR, or when the check above refused it.
+		constexpr const char* kAnimationEventsCapability = "animation-events";
+
+		struct AnimRequest
+		{
+			std::string              viewId;
+			std::string              jsFunction;
+			std::vector<std::string> events;
+
+			// Per request, for the page to see a gap and for the stop line.
+			std::uint64_t seq           = 0;
+			std::uint64_t matched       = 0;
+			std::uint64_t skippedHidden = 0;
+			std::uint64_t offMain       = 0;
+			std::vector<float> delaysMs;
+		};
+
+		// Guarded by g_mutex, the same lock as g_views, because the hook needs
+		// both at once: the request and the view's handle and visibility.
+		std::vector<AnimRequest> g_animRequests;
+
+		// Whether any request is open. The only thing the hook reads before it
+		// knows it has work, so a session with no consumer pays one load.
+		std::atomic<bool> g_animAny{ false };
+
+		bool                g_animHookInstalled = false;
+		bool                g_animLogEach       = false;
+		std::thread::id     g_mainThread{};
+		std::atomic<bool>   g_animFirstSeen{ false };
+
+		double WallClockMs()
+		{
+			// system_clock since its epoch, which MSVC and C++20 put at the Unix
+			// epoch - the same zero and the same unit as Date.now() in the page.
+			const auto now = std::chrono::system_clock::now().time_since_epoch();
+			return std::chrono::duration<double, std::milli>(now).count();
+		}
+
+		std::string JsonEscape(std::string_view a_text)
+		{
+			std::string out;
+			out.reserve(a_text.size());
+			for (const char c : a_text) {
+				switch (c) {
+				case '"':
+					out += "\\\"";
+					break;
+				case '\\':
+					out += "\\\\";
+					break;
+				default:
+					if (static_cast<unsigned char>(c) < 0x20) {
+						out += std::format("\\u{:04x}", static_cast<unsigned int>(static_cast<unsigned char>(c)));
+					} else {
+						out += c;
+					}
+				}
+			}
+			return out;
+		}
+
+		// The stop line: one per request that ends, whatever ended it.
+		// Called with g_mutex held; logs only.
+		void LogAnimStop(const AnimRequest& a_request, const char* a_reason)
+		{
+			float median = 0.0f;
+			float worst  = 0.0f;
+			if (!a_request.delaysMs.empty()) {
+				std::vector<float> sorted = a_request.delaysMs;
+				std::sort(sorted.begin(), sorted.end());
+				median = sorted[sorted.size() / 2];
+				worst  = sorted.back();
+			}
+
+			spdlog::info("WebUIBridge: animation events for view '{}' -> JS '{}' stopped ({}): {} matched, {} sent, "
+						 "{} skipped while hidden, {} seen off the main thread; event to call median {:.2f} ms, "
+						 "max {:.2f} ms over {} samples.",
+				a_request.viewId, a_request.jsFunction, a_reason, a_request.matched, a_request.seq,
+				a_request.skippedHidden, a_request.offMain, median, worst, a_request.delaysMs.size());
+		}
+
+		// Ends every request of one view (a_viewId non-empty) or of all views.
+		// Called with g_mutex held.
+		void DropAnimRequestsLocked(const std::string* a_viewId, const char* a_reason)
+		{
+			for (auto it = g_animRequests.begin(); it != g_animRequests.end();) {
+				if (!a_viewId || it->viewId == *a_viewId) {
+					LogAnimStop(*it, a_reason);
+					it = g_animRequests.erase(it);
+				} else {
+					++it;
+				}
+			}
+			g_animAny.store(!g_animRequests.empty(), std::memory_order_release);
+		}
+
+		void DropAllAnimRequests(const char* a_reason)
+		{
+			std::scoped_lock lock(g_mutex);
+			if (!g_animRequests.empty()) {
+				DropAnimRequestsLocked(nullptr, a_reason);
+			}
+		}
+
+		// Seen by the hook. Never throws past its own body.
+		void OnPlayerAnimationEvent(const RE::BSAnimationGraphEvent& a_event)
+		{
+			const char* tag = a_event.tag.c_str();
+			if (!tag || !*tag) {
+				return;
+			}
+
+			const double wallMs  = WallClockMs();
+			const auto   seenAt  = std::chrono::steady_clock::now();
+			const bool   onMain  = std::this_thread::get_id() == g_mainThread;
+
+			// The same two reads give Papyrus the moment of the event (1.51.0).
+			AnimationEventTimes::Record(tag, seenAt, wallMs, g_animLogEach);
+
+			struct Send
+			{
+				IWebUIBackend*            backend;
+				IWebUIBackend::ViewHandle handle;
+				std::string               viewId;
+				std::string               jsFunction;
+				std::uint64_t             seq;
+			};
+			std::vector<Send> sends;
+
+			{
+				std::scoped_lock lock(g_mutex);
+				for (auto& request : g_animRequests) {
+					const bool wanted = std::any_of(request.events.begin(), request.events.end(),
+						[tag](const std::string& a_name) { return Config::EqualsNoCase(a_name, tag); });
+					if (!wanted) {
+						continue;
+					}
+					++request.matched;
+					if (!onMain) {
+						++request.offMain;
+					}
+
+					const auto view = g_views.find(request.viewId);
+					if (view == g_views.end() || view->second.handle == 0 || !view->second.domReady) {
+						continue;
+					}
+					// A hidden page does not run, and a call queued for it would
+					// arrive on Show with a stale time. The request stays.
+					if (view->second.hidden) {
+						++request.skippedHidden;
+						continue;
+					}
+
+					++request.seq;
+					sends.push_back(Send{ view->second.backend, view->second.handle, request.viewId,
+						request.jsFunction, request.seq });
+				}
+			}
+
+			if (!g_animFirstSeen.exchange(true)) {
+				const auto* holder = a_event.holder;
+				spdlog::info("WebUIBridge: first player animation event through the hook: '{}', holder 0x{:08X}, {} "
+							 "thread.",
+					tag, holder ? holder->GetFormID() : 0u, onMain ? "main" : "another");
+			}
+
+			if (sends.empty()) {
+				return;
+			}
+
+			const std::string name = JsonEscape(tag);
+			for (auto& send : sends) {
+				std::string json = std::format("{{\"event\":\"{}\",\"t\":{:.3f},\"seq\":{}}}", name, wallMs, send.seq);
+
+				DispatchToGame([send = std::move(send), json = std::move(json), seenAt, tagCopy = std::string(tag),
+								   onMain]() {
+					send.backend->Call(send.handle, send.jsFunction.c_str(), json.c_str());
+
+					const float delay = std::chrono::duration<float, std::milli>(
+						std::chrono::steady_clock::now() - seenAt)
+					                        .count();
+					{
+						std::scoped_lock lock(g_mutex);
+						for (auto& request : g_animRequests) {
+							if (request.viewId == send.viewId && request.jsFunction == send.jsFunction) {
+								if (request.delaysMs.size() < kAnimMaxDelaySamples) {
+									request.delaysMs.push_back(delay);
+								}
+								break;
+							}
+						}
+					}
+
+					if (g_animLogEach) {
+						spdlog::info("WebUIBridge: [anim] '{}' -> view '{}' JS '{}' seq {} called {:.2f} ms after the "
+									 "event ({} thread).",
+							tagCopy, send.viewId, send.jsFunction, send.seq, delay, onMain ? "main" : "another");
+					}
+				});
+			}
+		}
+
+		struct PlayerAnimationEventHook
+		{
+			static RE::BSEventNotifyControl thunk(RE::BSTEventSink<RE::BSAnimationGraphEvent>* a_this,
+				const RE::BSAnimationGraphEvent*                                               a_event,
+				RE::BSTEventSource<RE::BSAnimationGraphEvent>*                                 a_source)
+			{
+				if (a_event && (g_animAny.load(std::memory_order_acquire) || AnimationEventTimes::Any())) {
+					// Nothing may unwind into the engine's event dispatch.
+					try {
+						OnPlayerAnimationEvent(*a_event);
+					} catch (...) {
+					}
+				}
+				return func(a_this, a_event, a_source);
+			}
+
+			static inline REL::Relocation<decltype(thunk)> func;
+		};
+
+		// kDataLoaded, main thread. Also where the main thread is learned.
+		void InstallAnimationEventHook()
+		{
+			g_mainThread = std::this_thread::get_id();
+
+			Config::ForEachPair([](std::string_view a_key, std::string_view a_value) {
+				if (Config::EqualsNoCase(a_key, "LogWebUIEvents")) {
+					g_animLogEach = a_value == "1" || Config::EqualsNoCase(a_value, "true");
+				}
+			});
+
+			if (g_animHookInstalled) {
+				return;
+			}
+
+			if (REL::Module::IsVR()) {
+				spdlog::info("WebUIBridge: player animation events to a page are not available on VR - "
+							 "\"animation-events\" answers False.");
+				return;
+			}
+
+			try {
+				auto* player = RE::PlayerCharacter::GetSingleton();
+				if (!player) {
+					spdlog::error("WebUIBridge: no player at kDataLoaded - animation events to a page are off, "
+								  "\"animation-events\" answers False.");
+					return;
+				}
+
+				REL::Relocation<std::uintptr_t> vtbl{ RE::VTABLE_PlayerCharacter[2] };
+				auto* sink = static_cast<RE::BSTEventSink<RE::BSAnimationGraphEvent>*>(player);
+				const auto vptr = *reinterpret_cast<const std::uintptr_t*>(sink);
+				if (vptr != vtbl.address()) {
+					spdlog::error("WebUIBridge: the player's animation sink uses table 0x{:X}, not "
+								  "VTABLE_PlayerCharacter[2] at 0x{:X} - hook not written, animation events to a "
+								  "page are off, \"animation-events\" answers False.",
+						vptr, vtbl.address());
+					return;
+				}
+
+				PlayerAnimationEventHook::func = vtbl.write_vfunc(0x01, PlayerAnimationEventHook::thunk);
+				g_animHookInstalled           = true;
+				spdlog::info("WebUIBridge: player animation events hooked (VTABLE_PlayerCharacter[2]+0x01, the "
+							 "table checked against the player's sink); idle until a view asks; per event log {}.",
+					g_animLogEach ? "on" : "off");
+			} catch (const std::exception& e) {
+				spdlog::error("WebUIBridge: failed to hook player animation events: {} - \"animation-events\" "
+							  "answers False.",
+					e.what());
+			} catch (...) {
+				spdlog::error("WebUIBridge: failed to hook player animation events (unknown exception) - "
+							  "\"animation-events\" answers False.");
+			}
+		}
+
+		// Lodestone.WebUIRegisterAnimationEvents(String, String, String[]) -> Bool
+		//
+		// From now on, every player animation event named in asEvents calls
+		// asJsFunction in the view with {"event":"<name>","t":<ms>,"seq":<n>}.
+		// A second call with the same view and function replaces the list.
+		bool WebUIRegisterAnimationEvents(RE::StaticFunctionTag*, RE::BSFixedString a_viewId,
+			RE::BSFixedString a_jsFunction, std::vector<RE::BSFixedString> a_events)
+		{
+			try {
+				const std::string viewId     = ToStd(a_viewId);
+				const std::string jsFunction = ToStd(a_jsFunction);
+
+				if (!Active()) {
+					spdlog::warn("WebUIBridge: WebUIRegisterAnimationEvents refused for view '{}' - no web UI "
+								 "backend.",
+						viewId);
+					return false;
+				}
+				if (!g_animHookInstalled) {
+					spdlog::warn("WebUIBridge: WebUIRegisterAnimationEvents refused for view '{}' - "
+								 "\"animation-events\" is not available in this session (see the hook line).",
+						viewId);
+					return false;
+				}
+				if (viewId.empty() || jsFunction.empty()) {
+					spdlog::warn("WebUIBridge: WebUIRegisterAnimationEvents needs a view id and a JS function name.");
+					return false;
+				}
+
+				std::vector<std::string> events;
+				for (const auto& entry : a_events) {
+					std::string name = ToStd(entry);
+					if (name.empty()) {
+						continue;
+					}
+					const bool repeated = std::any_of(events.begin(), events.end(),
+						[&name](const std::string& a_have) { return Config::EqualsNoCase(a_have, name); });
+					if (!repeated) {
+						events.push_back(std::move(name));
+					}
+				}
+				if (events.empty()) {
+					spdlog::warn("WebUIBridge: WebUIRegisterAnimationEvents refused for view '{}' JS '{}' - the event "
+								 "list is empty.",
+						viewId, jsFunction);
+					return false;
+				}
+				if (events.size() > kAnimMaxEventsPerRequest) {
+					spdlog::warn("WebUIBridge: WebUIRegisterAnimationEvents refused for view '{}' JS '{}' - {} event "
+								 "names, the limit is {}.",
+						viewId, jsFunction, events.size(), kAnimMaxEventsPerRequest);
+					return false;
+				}
+
+				std::string list;
+				for (const auto& name : events) {
+					list += list.empty() ? name : "," + name;
+				}
+
+				std::scoped_lock lock(g_mutex);
+
+				const auto view = g_views.find(viewId);
+				if (view == g_views.end() || view->second.handle == 0 || !view->second.domReady) {
+					spdlog::warn("WebUIBridge: WebUIRegisterAnimationEvents refused - view '{}' is {}.", viewId,
+						view == g_views.end() ? "unknown" : "not ready");
+					return false;
+				}
+
+				for (auto& request : g_animRequests) {
+					if (request.viewId == viewId && request.jsFunction == jsFunction) {
+						request.events = std::move(events);
+						spdlog::info("WebUIBridge: animation events for view '{}' -> JS '{}' replaced: {}.", viewId,
+							jsFunction, list);
+						return true;
+					}
+				}
+
+				const auto ofView = static_cast<std::size_t>(std::count_if(g_animRequests.begin(),
+					g_animRequests.end(), [&viewId](const AnimRequest& a_r) { return a_r.viewId == viewId; }));
+				if (ofView >= kAnimMaxRequestsPerView) {
+					spdlog::warn("WebUIBridge: WebUIRegisterAnimationEvents refused for view '{}' JS '{}' - the view "
+								 "already holds {} requests, the limit.",
+						viewId, jsFunction, kAnimMaxRequestsPerView);
+					return false;
+				}
+				if (g_animRequests.size() >= kAnimMaxRequests) {
+					spdlog::warn("WebUIBridge: WebUIRegisterAnimationEvents refused for view '{}' JS '{}' - {} "
+								 "requests are open across all views, the limit.",
+						viewId, jsFunction, kAnimMaxRequests);
+					return false;
+				}
+
+				AnimRequest request;
+				request.viewId     = viewId;
+				request.jsFunction = jsFunction;
+				request.events     = std::move(events);
+				g_animRequests.push_back(std::move(request));
+				g_animAny.store(true, std::memory_order_release);
+
+				spdlog::info("WebUIBridge: animation events for view '{}' -> JS '{}': {}.", viewId, jsFunction, list);
+				return true;
+			} catch (...) {
+				spdlog::error("WebUIBridge: WebUIRegisterAnimationEvents threw.");
+				return false;
+			}
+		}
+
+		// Lodestone.WebUIUnregisterAnimationEvents(String, String) -> Bool
+		//
+		// Ends the request of that view and function, or every request of the
+		// view when asJsFunction is empty. True when something was ended.
+		bool WebUIUnregisterAnimationEvents(RE::StaticFunctionTag*, RE::BSFixedString a_viewId,
+			RE::BSFixedString a_jsFunction)
+		{
+			try {
+				const std::string viewId     = ToStd(a_viewId);
+				const std::string jsFunction = ToStd(a_jsFunction);
+
+				std::scoped_lock lock(g_mutex);
+				bool             ended = false;
+				for (auto it = g_animRequests.begin(); it != g_animRequests.end();) {
+					if (it->viewId == viewId && (jsFunction.empty() || it->jsFunction == jsFunction)) {
+						LogAnimStop(*it, "unregistered");
+						it    = g_animRequests.erase(it);
+						ended = true;
+					} else {
+						++it;
+					}
+				}
+				g_animAny.store(!g_animRequests.empty(), std::memory_order_release);
+
+				if (!ended) {
+					spdlog::info("WebUIBridge: WebUIUnregisterAnimationEvents for view '{}' JS '{}' - no such request, "
+								 "nothing ended.",
+						viewId, jsFunction.empty() ? "(any)" : jsFunction);
+				}
+				return ended;
+			} catch (...) {
+				spdlog::error("WebUIBridge: WebUIUnregisterAnimationEvents threw.");
+				return false;
+			}
+		}
+
 		// --- Natives -------------------------------------------------------------
 		//
 		// Every fallible body below is wrapped: a C++ exception crossing into the
@@ -934,6 +1408,10 @@ namespace Lodestone::Core::WebUIBridge
 							slot = ListenerSlot{};
 						}
 					}
+
+					// Animation event requests die with their view, for the
+					// same reason as the slots.
+					DropAnimRequestsLocked(&viewId, "view destroyed");
 				}
 
 				if (handle != 0) {
@@ -1081,7 +1559,15 @@ namespace Lodestone::Core::WebUIBridge
 					return false;
 				}
 
-				return backend->HasCapability(ToStd(a_capability).c_str());
+				const std::string capability = ToStd(a_capability);
+
+				// The one name the bridge answers itself - see
+				// kAnimationEventsCapability.
+				if (capability == kAnimationEventsCapability) {
+					return g_animHookInstalled;
+				}
+
+				return backend->HasCapability(capability.c_str());
 			} catch (...) {
 				return false;
 			}
@@ -1694,6 +2180,11 @@ namespace Lodestone::Core::WebUIBridge
 		}
 	}
 
+	bool PlayerAnimationHookInstalled()
+	{
+		return g_animHookInstalled;
+	}
+
 	void Acquire()
 	{
 		// Every backend gets its chance, and none is chosen here.
@@ -1735,6 +2226,18 @@ namespace Lodestone::Core::WebUIBridge
 		// still before any consumer can have created a view.
 		if (a_msg->type == SKSE::MessagingInterface::kDataLoaded) {
 			InstallMenuWatch();
+			InstallAnimationEventHook();
+		}
+
+		// Animation event requests do not cross a load or a new game: the
+		// script that asked runs again there and asks again. Every load ends
+		// them, the same save included - the two cannot be told apart here.
+		if (a_msg->type == SKSE::MessagingInterface::kPreLoadGame) {
+			DropAllAnimRequests("a save is being loaded");
+		}
+
+		if (a_msg->type == SKSE::MessagingInterface::kNewGame) {
+			DropAllAnimRequests("a new game is starting");
 		}
 
 		// THE TWO AUTOMATIC RELEASES THAT A MENU CANNOT COVER.
@@ -1792,6 +2295,10 @@ namespace Lodestone::Core::WebUIBridge
 		a_vm->RegisterFunction("WebUIDeclareArea", "Lodestone", WebUIDeclareArea);
 		a_vm->RegisterFunction("WebUIGetDeclaredAreas", "Lodestone", WebUIGetDeclaredAreas);
 
+		// The 1.50.0 additions.
+		a_vm->RegisterFunction("WebUIRegisterAnimationEvents", "Lodestone", WebUIRegisterAnimationEvents);
+		a_vm->RegisterFunction("WebUIUnregisterAnimationEvents", "Lodestone", WebUIUnregisterAnimationEvents);
+
 		// The 1.17.x surface, deprecated. Removed in 2.0.0, not before.
 		a_vm->RegisterFunction("PrismaAvailable", "Lodestone", PrismaAvailable);
 		a_vm->RegisterFunction("PrismaCreateView", "Lodestone", PrismaCreateView);
@@ -1803,7 +2310,7 @@ namespace Lodestone::Core::WebUIBridge
 		a_vm->RegisterFunction("PrismaDestroy", "Lodestone", PrismaDestroy);
 		a_vm->RegisterFunction("PrismaRegisterListener", "Lodestone", PrismaRegisterListener);
 
-		spdlog::info("WebUIBridge: natives registered (29 - 20 current, 9 deprecated).");
+		spdlog::info("WebUIBridge: natives registered (31 - 22 current, 9 deprecated).");
 		return true;
 	}
 }
@@ -1865,7 +2372,14 @@ namespace Lodestone::Core::WebUIBackendCallbacks
 			viewId   = g_listeners[a_slot].viewId;
 		}
 
-		spdlog::debug("WebUIBridge: view '{}' fired slot {} -> mod event '{}'.", viewId, a_slot, modEvent);
+		if (g_animLogEach) {
+			// LogWebUIEvents = 1: the page's side of a round trip, readable in a
+			// release build. Off, it stays the debug line it always was.
+			spdlog::info("WebUIBridge: [listener] view '{}' slot {} -> mod event '{}' arg '{}'.", viewId, a_slot,
+				modEvent, a_argument ? a_argument : "");
+		} else {
+			spdlog::debug("WebUIBridge: view '{}' fired slot {} -> mod event '{}'.", viewId, a_slot, modEvent);
+		}
 		SendModEvent(std::move(modEvent), a_argument ? std::string(a_argument) : std::string());
 	}
 
