@@ -127,7 +127,9 @@ namespace
 		Lodestone::Core::CinematicCamera::HandleSKSEMessage(a_msg);
 
 		// Portrait answers "" to a script still waiting for a capture when a
-		// save is loaded or a new game starts. Same shape as MenuPrompt.
+		// save is loaded or a new game starts, and asks SmoothCam for its
+		// modder interface at kPostLoad, kPostPostLoad and kDataLoaded. Same
+		// shape as MenuPrompt.
 		Lodestone::Core::Portrait::HandleSKSEMessage(a_msg);
 
 		// AnimationEventTimes ends every request at a load or a new game; the

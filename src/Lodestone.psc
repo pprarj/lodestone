@@ -1337,8 +1337,12 @@ Int Function GetEquipBlockCount() global native
 ; it. You pass a string id you chose ("StrengthMatters"), and Lodestone keeps the
 ; map.
 ;
-; NOTHING HERE SURVIVES A SAVE. After a load, no view exists. Recreate it the
-; same way you recreate book text - the state is in your script, not in the DLL.
+; A VIEW SURVIVES A SAVE LOAD, WITHOUT FOCUS. Loading a save or starting a new game
+; releases any focus a view held, but the view stays in the table and keeps its page.
+; After a load, ask WebUIGetViewIds() before recreating a view: if your id is in
+; the list the view is still there, and WebUICreateView() for the same id answers
+; True and creates nothing, so waiting for a new ready event after it is waiting
+; for something that does not come.
 ;
 ; A MUTATING CALL REPORTS THAT IT WAS ACCEPTED, NOT THAT IT FINISHED. Every call
 ; into the backend is handed to the game's main thread, because Papyrus does not
@@ -2786,3 +2790,31 @@ Bool Function CinematicOrbit(Actor akTarget, Float afStartAngle, Float afSweep, 
 ;
 ; Latent (waits a few frames): writes a front PNG of the player's head to Data\PrismaUI\views\<asFolder>\ and Data\Magelight\<asFolder>\ under a new name and returns that name, "" when refused (first person, other camera states, a pausing menu, a capture in flight) or failed - the reason is in Lodestone.log.
 String Function CapturePlayerPortrait(String asFolder, Int aiSize = 256) global native
+
+; --- Player portrait, cutout and lookup (added in DLL 1.53.0) ----------------
+;
+; Requires Lodestone.GetVersion() >= 1053000 (1.53.0).
+;
+; Latent (waits a few frames), the same capture as CapturePlayerPortrait with four differences: the frame shows the head and shoulders (33 units of height around a point 3.2 units above the head node, whatever the FOV); a light of its own lights the face during the capture frames and is removed after them (nothing of it goes into the save); a helmet is not drawn and the hair under it is (nothing is unequipped); and the PNG has alpha 0 wherever the depth says it is not the player - past 45 units behind the head, and, with abTrimBackground, also what is within that reach but not joined to the face (a wall right behind, someone beside).
+; asKey: a key per character, so two characters do not share a portrait. Letters, digits, '_' and '-'; upper case becomes lower case, any other character becomes '_', at most 32. The file is lodestone-portrait-<key>-<n>.png ("" = no key: lodestone-portrait-<n>.png, the names of CapturePlayerPortrait), and a capture deletes only the earlier files of its own key.
+; Returns the file name, "" when refused or failed - the reason is in Lodestone.log.
+String Function CapturePlayerPortraitCutout(String asFolder, Int aiSize = 256, String asKey = "", Bool abTrimBackground = True) global native
+
+; Not latent: the newest portrait file of asKey in Data\PrismaUI\views\<asFolder>\ or Data\Magelight\<asFolder>\ (the key is cleaned as above), "" when there is none. Writes nothing. For a page that needs the file after a load, without keeping the name in the save.
+String Function GetPlayerPortrait(String asFolder, String asKey = "") global native
+
+; --- Player portrait, reason of a failure (added in DLL 1.54.0) --------------
+;
+; Requires Lodestone.GetVersion() >= 1054000 (1.54.0).
+;
+; Not latent: the reason the last capture of CapturePlayerPortrait or CapturePlayerPortraitCutout that returned "" failed, as a short code that does not change between versions; "" when none has since the game started. A capture that succeeds does not clear it, so read it right after a "". The codes:
+;   busy        - another capture was still in flight
+;   menu        - a menu pauses the game, or the game ran no camera update during the capture
+;   firstperson - the camera is not in the plain third person view (first person, mounted, furniture, free camera)
+;   camera      - the camera did not stay at the portrait's pose (a camera mod moved it), so no frame of the pose was there to copy
+;   face        - the head is turned too far from the camera for a front portrait
+;   faded       - the game had faded the player out (its camera is pushed into the body, as with a wall close behind)
+;   load        - a save was loaded or a new game started while the script waited
+;   other       - anything else (bad folder or size, not installed this session, the renderer, writing the file); the line in Lodestone.log says what
+; Since 1.54.0, when SmoothCam is loaded and moves the camera off the pose, the capture asks it for the camera through its modder API for the pose frames and gives it back after them; without SmoothCam nothing is asked.
+String Function GetPlayerPortraitFailure() global native
