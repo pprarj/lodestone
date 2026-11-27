@@ -15,6 +15,7 @@
 #include "AnimationEventTimes.h"
 #include "Config.h"
 #include "WebUIBackend.h"
+#include "WebUIText.h"
 
 #include <algorithm>
 #include <array>
@@ -279,6 +280,11 @@ namespace Lodestone::Core::WebUIBridge
 			// to create a visible view, the defect is that divergence, not this
 			// field, and it gets fixed in the backend that has it.
 			bool hidden = true;
+
+			// Whether text sent to this view has needed the cp1252 to UTF-8
+			// conversion yet (WebUIText.h). Only the first time is logged, so a
+			// panel refreshed every second writes one line, not one per call.
+			bool textConverted = false;
 
 			// Whether this view holds the game's mouse and keyboard.
 			//
@@ -676,6 +682,22 @@ namespace Lodestone::Core::WebUIBridge
 		// missing is the hook - on VR, or when the check above refused it.
 		constexpr const char* kAnimationEventsCapability = "animation-events";
 
+		// The capability name of the text conversion (1.54.1). Answered by the
+		// bridge, like the one above: the conversion runs here, before any
+		// backend sees the text, so it holds for every backend. A consumer that
+		// still converts or escapes its own text can stop when this is True.
+		constexpr const char* kPageTextUtf8Capability = "page-text-utf8";
+
+		// Writes the one line per view the first time its text was converted.
+		// a_what names the native and the argument, for the reader of the log.
+		void LogFirstTextConversion(const std::string& a_viewId, const char* a_what, std::size_t a_before,
+			std::size_t a_after)
+		{
+			spdlog::info("WebUIBridge: view '{}' was sent text that is not UTF-8 ({}), read as the game's code page "
+						 "1252 and sent as UTF-8 ({} -> {} bytes); later conversions for this view are not logged.",
+				a_viewId, a_what, a_before, a_after);
+		}
+
 		struct AnimRequest
 		{
 			std::string              viewId;
@@ -958,8 +980,10 @@ namespace Lodestone::Core::WebUIBridge
 			RE::BSFixedString a_jsFunction, std::vector<RE::BSFixedString> a_events)
 		{
 			try {
-				const std::string viewId     = ToStd(a_viewId);
-				const std::string jsFunction = ToStd(a_jsFunction);
+				const std::string viewId      = ToStd(a_viewId);
+				std::string       jsFunction  = ToStd(a_jsFunction);
+				const std::size_t fnBefore    = jsFunction.size();
+				const bool        fnConverted = WebUIText::ToPageText(jsFunction);
 
 				if (!Active()) {
 					spdlog::warn("WebUIBridge: WebUIRegisterAnimationEvents refused for view '{}' - no web UI "
@@ -1015,6 +1039,11 @@ namespace Lodestone::Core::WebUIBridge
 					spdlog::warn("WebUIBridge: WebUIRegisterAnimationEvents refused - view '{}' is {}.", viewId,
 						view == g_views.end() ? "unknown" : "not ready");
 					return false;
+				}
+				if (fnConverted && !view->second.textConverted) {
+					view->second.textConverted = true;
+					LogFirstTextConversion(viewId, "WebUIRegisterAnimationEvents, JS function name", fnBefore,
+						jsFunction.size());
 				}
 
 				for (auto& request : g_animRequests) {
@@ -1255,25 +1284,44 @@ namespace Lodestone::Core::WebUIBridge
 					return false;
 				}
 
-				const std::string function = ToStd(a_jsFunction);
+				std::string function = ToStd(a_jsFunction);
 				if (function.empty()) {
 					return false;
 				}
 
-				IWebUIBackend*            backend = nullptr;
-				IWebUIBackend::ViewHandle handle  = 0;
+				// The page reads UTF-8 and the game's text is cp1252: see
+				// WebUIText.h. ASCII and UTF-8 pass untouched and uncopied.
+				std::string       json          = ToStd(a_json);
+				const std::size_t fnBefore      = function.size();
+				const std::size_t jsonBefore    = json.size();
+				const bool        fnConverted   = WebUIText::ToPageText(function);
+				const bool        jsonConverted = WebUIText::ToPageText(json);
+				const std::string viewId        = ToStd(a_viewId);
+
+				IWebUIBackend*            backend  = nullptr;
+				IWebUIBackend::ViewHandle handle   = 0;
+				bool                      logFirst = false;
 
 				{
 					std::scoped_lock lock(g_mutex);
-					const auto       it = g_views.find(ToStd(a_viewId));
+					const auto       it = g_views.find(viewId);
 					if (it == g_views.end() || it->second.handle == 0 || !it->second.domReady) {
 						return false;
 					}
 					backend = it->second.backend;
 					handle  = it->second.handle;
+					if ((fnConverted || jsonConverted) && !it->second.textConverted) {
+						it->second.textConverted = true;
+						logFirst                 = true;
+					}
 				}
 
-				DispatchToGame([backend, handle, function, json = ToStd(a_json)]() {
+				if (logFirst) {
+					LogFirstTextConversion(viewId, jsonConverted ? "WebUICall, argument" : "WebUICall, JS function name",
+						jsonConverted ? jsonBefore : fnBefore, jsonConverted ? json.size() : function.size());
+				}
+
+				DispatchToGame([backend, handle, function = std::move(function), json = std::move(json)]() {
 					backend->Call(handle, function.c_str(), json.c_str());
 				});
 
@@ -1451,11 +1499,14 @@ namespace Lodestone::Core::WebUIBridge
 				}
 
 				const std::string viewId     = ToStd(a_viewId);
-				const std::string jsFunction = ToStd(a_jsFunction);
+				std::string       jsFunction = ToStd(a_jsFunction);
 				const std::string modEvent   = ToStd(a_modEvent);
 				if (jsFunction.empty() || modEvent.empty()) {
 					return false;
 				}
+				const std::size_t fnBefore    = jsFunction.size();
+				const bool        fnConverted = WebUIText::ToPageText(jsFunction);
+				bool              logFirst    = false;
 
 				IWebUIBackend*            backend = nullptr;
 				IWebUIBackend::ViewHandle handle  = 0;
@@ -1469,6 +1520,10 @@ namespace Lodestone::Core::WebUIBridge
 					}
 					backend = it->second.backend;
 					handle  = it->second.handle;
+					if (fnConverted && !it->second.textConverted) {
+						it->second.textConverted = true;
+						logFirst                 = true;
+					}
 
 					// Reuse the slot if this pair is already registered. A
 					// backend keeps one callback per (view, name), so a second
@@ -1500,6 +1555,10 @@ namespace Lodestone::Core::WebUIBridge
 					}
 
 					g_listeners[slot] = ListenerSlot{ true, viewId, modEvent };
+				}
+
+				if (logFirst) {
+					LogFirstTextConversion(viewId, "WebUIRegisterListener, JS function name", fnBefore, jsFunction.size());
 				}
 
 				DispatchToGame([backend, handle, jsFunction, slot]() {
@@ -1561,10 +1620,13 @@ namespace Lodestone::Core::WebUIBridge
 
 				const std::string capability = ToStd(a_capability);
 
-				// The one name the bridge answers itself - see
-				// kAnimationEventsCapability.
+				// The two names the bridge answers itself - see
+				// kAnimationEventsCapability and kPageTextUtf8Capability.
 				if (capability == kAnimationEventsCapability) {
 					return g_animHookInstalled;
+				}
+				if (capability == kPageTextUtf8Capability) {
+					return true;
 				}
 
 				return backend->HasCapability(capability.c_str());

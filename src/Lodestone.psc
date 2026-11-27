@@ -1496,6 +1496,18 @@ Bool Function WebUIIsViewReady(String asViewId) global native
 ; assume the case you saw once is stable: the same literal has been seen arriving
 ; both ways within a single session.
 ;
+; THE GAME'S TEXT IS NOT UTF-8, AND SINCE 1.54.1 THAT IS HANDLED HERE. A name from
+; the game (GetName(), a localized label) holds the bytes of the game's code page,
+; 1252 in the Western languages, and both backends read the payload as UTF-8 and
+; turn a string with one such byte into "", so the page got nothing. asJson and
+; asJsFunction are now converted before they leave: ASCII and valid UTF-8 go
+; through unchanged, anything else is read as code page 1252 and sent as UTF-8.
+; The same holds for the function names of WebUIRegisterListener and
+; WebUIRegisterAnimationEvents. Text in another legacy code page (an old Russian
+; or Polish translation) arrives as the wrong letters rather than as "". Ask
+; WebUIHasCapability("page-text-utf8") before dropping a workaround of your own;
+; the version number does not tell which features a build carries.
+;
 ; Returns True when the request was accepted. Returns False for an unknown id, an
 ; empty function name, and for a view whose page is not ready - the backend drops
 ; those calls, so reporting success would be a lie.
@@ -1575,6 +1587,11 @@ String Function WebUIGetBackend() global native
 ;                       animation events to a page. Answered by Lodestone, not
 ;                       by the backend: True on all three backends on SE and AE,
 ;                       False on VR and when Lodestone could not listen.
+;
+; Added in 1.54.1:
+;   "page-text-utf8"    does text that is not UTF-8 reach the page converted,
+;                       instead of arriving as "". Answered by Lodestone, True
+;                       on every backend. See WebUICall.
 ;
 ; THE ANSWERS DEPEND ON THE BACKEND, WHICH IS THE ENTIRE POINT OF ASKING HERE
 ; RATHER THAN ASKING WHICH BACKEND IT IS. As of 1.27.0:
